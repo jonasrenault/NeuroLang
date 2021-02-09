@@ -134,11 +134,14 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
 
     def __len__(self):
         if self._count is None:
-            q = select([func.count()]).select_from(
-                select(self._table).distinct()
-            )
-            res = DaskContextFactory.sql(q).compute()
-            self._count = 0 if len(res) == 0 else res.squeeze()
+            if self._table is not None:
+                q = select([func.count()]).select_from(
+                    select(self._table).distinct()
+                )
+                res = DaskContextFactory.sql(q).compute()
+                self._count = 0 if len(res) == 0 else res.squeeze()
+            else:
+                self._count = 0
         return self._count
 
     def __iter__(self):
@@ -223,7 +226,7 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
     def selection_columns(self, select_criteria):
         if self._table is None:
             return self.copy()
-        query = select(self.sql_columns).select_from(self._table)
+        query = select(*self.sql_columns).select_from(self._table)
         for k, v in select_criteria.items():
             query = query.where(
                 self.sql_columns.get(str(k)) == self.sql_columns.get(str(v))
@@ -254,30 +257,26 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         if res is not None:
             return res
 
-        query = select(
-            self.sql_columns.values()
-            + [
-                other.sql_columns.get(str(i)).label(str(i + self.arity))
-                for i in range(other.arity)
-            ]
-        )
+        # Create an alias on the other table's name if we're joining on
+        # the same table.
+        ot = other._table
+        if other._table_name == self._table_name:
+            ot = ot.alias()
+
+        join_cols = list(self.sql_columns) + [
+            ot.c.get(str(i)).label(str(i + self.arity))
+            for i in range(other.arity)
+        ]
+        query = select(*join_cols)
 
         if join_indices is not None and len(join_indices) > 0:
             on_clause = and_(
                 *[
-                    self.sql_columns.get(str(i))
-                    == other.sql_columns.get(str(j))
+                    self.sql_columns.get(str(i)) == ot.c.get(str(j))
                     for i, j in join_indices
                 ]
             )
-            # Create an alias on the other table's name if we're joining on
-            # the same table.
-            other_join_table = other._table
-            if other._table_name == self._table_name:
-                other_join_table = other_join_table.alias()
-            query = query.select_from(
-                self._table.join(other_join_table, on_clause)
-            )
+            query = query.select_from(self._table.join(ot, on_clause))
         return self._create_view_from_query(query)
 
     def cross_product(self, other):
@@ -287,11 +286,14 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         if self.arity > 0 and self._table is not None:
             # See https://dask-sql.readthedocs.io/en/latest/pages/sql.html?highlight=head#limitatons
             # for difference between limit in SQL and head in dask
-            return next(
-                DaskContextFactory.sql(select(self._table))
-                .head(1)
-                .itertuples(name=None, index=False)
-            )
+            try:
+                return next(
+                    DaskContextFactory.sql(select(self._table))
+                    .head(1)
+                    .itertuples(name=None, index=False)
+                )
+            except StopIteration:
+                return None
         elif self._count == 1:
             return tuple()
         return None
@@ -749,11 +751,14 @@ class NamedRelationalAlgebraFrozenSet(
         if self.arity > 0 and self._table is not None:
             # See https://dask-sql.readthedocs.io/en/latest/pages/sql.html?highlight=head#limitatons
             # for difference between limit in SQL and head in dask
-            return next(
-                DaskContextFactory.sql(select(self._table))
-                .head(1)
-                .itertuples(name="tuple", index=False)
-            )
+            try:
+                return next(
+                    DaskContextFactory.sql(select(self._table))
+                    .head(1)
+                    .itertuples(name="tuple", index=False)
+                )
+            except StopIteration:
+                return None
         elif self._count == 1:
             return tuple()
         return None
