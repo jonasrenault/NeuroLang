@@ -2,7 +2,7 @@ import pytest
 
 from ..relational_algebra_set import (
     pandas,
-    sql,
+    dask_sql,
     RelationalAlgebraColumnInt,
     RelationalAlgebraColumnStr,
     RelationalAlgebraStringExpression,
@@ -14,24 +14,9 @@ from unittest.mock import patch
 from sqlalchemy import create_engine
 
 
-@pytest.fixture(ids=["pandas", "sql"], params=[(pandas,), (sql,)])
+@pytest.fixture(ids=["pandas", "dask"], params=[(pandas,), (dask_sql,)])
 def ra_module(request):
     return request.param[0]
-
-
-@pytest.fixture(scope="session", autouse=True)
-def mock_sql_engine():
-    """yields a SQLAlchemy engine which is suppressed after the test session"""
-    engine_ = create_engine("sqlite://", echo=False)
-
-    with patch.object(
-        SQLAEngineFactory, "_in_memory_sqlite", True
-    ), patch.object(SQLAEngineFactory, "_create_engine") as _fixture:
-        _fixture.return_value = engine_
-        yield _fixture
-
-    engine_.dispose()
-
 
 def test_relational_algebra_set_semantics_empty(ra_module):
     ras = ra_module.RelationalAlgebraSet()

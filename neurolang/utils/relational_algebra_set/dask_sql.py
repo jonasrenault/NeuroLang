@@ -69,8 +69,12 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
             if len(data.columns) > 0:
                 self._table_name = self._new_name()
                 ddf = dd.from_pandas(data, npartitions=3)
-                DaskContextFactory.get_context().create_table(self._table_name, ddf)
-                self._table = table(self._table_name, *[column(c) for c in ddf.columns])
+                DaskContextFactory.get_context().create_table(
+                    self._table_name, ddf
+                )
+                self._table = table(
+                    self._table_name, *[column(c) for c in ddf.columns]
+                )
             self._count = len(data)
 
     @classmethod
@@ -92,7 +96,7 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         output = cls()
         output._init_from(other)
         return output
-    
+
     def copy(self):
         if self.is_dee():
             return self.dee()
@@ -118,33 +122,39 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
 
     @property
     def columns(self):
+        if self._table is None:
+            return []
         return self._table.c.keys()
 
     @property
     def sql_columns(self):
+        if self._table is None:
+            return {}
         return self._table.c
 
     def __len__(self):
         if self._count is None:
-            q = select([func.count()]).select_from(self._table)
-            res = DaskContextFactory.sql(q)
-            print(res)
+            q = select([func.count()]).select_from(
+                select(self._table).distinct()
+            )
+            res = DaskContextFactory.sql(q).compute()
+            self._count = 0 if len(res) == 0 else res.squeeze()
         return self._count
 
     def __iter__(self):
         values = self._fetchall(True).itertuples(name=None, index=False)
-        # if self.arity > 0 and self._table is not None:
-        #     df = DaskContextFactory.sql(select(self._table)).compute().drop_duplicates()
-        #     values = df.itertuples(name=None, index=False)
-        # elif self.arity == 0 and len(self) > 0:
-        #     values = {tuple()}
-        # else:
-        #     values = {}
         for v in values:
-            yield(tuple(v))
+            yield (tuple(v))
 
     def __contains__(self, element):
-        raise NotImplementedError()
+        if self.arity == 0:
+            return False
+        element = self._normalise_element(element)
+        query = select(self._table)
+        for c, v in element.items():
+            query = query.where(self.sql_columns.get(c) == v)
+        res = DaskContextFactory.sql(query).head(1)
+        return len(res) > 0
 
     def _normalise_element(self, element):
         """
@@ -167,7 +177,6 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         else:
             element = dict(zip(self.columns, (element,)))
         return element
-
 
     def _create_view_from_query(self, query):
         output = type(self)()
@@ -221,7 +230,6 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
             )
         return self._create_view_from_query(query)
 
-
     def itervalues(self):
         raise NotImplementedError()
 
@@ -245,7 +253,6 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         res = self._dee_dum_product(other)
         if res is not None:
             return res
-
 
         query = select(
             self.sql_columns.values()
@@ -274,82 +281,29 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         return self._create_view_from_query(query)
 
     def cross_product(self, other):
-        """
-        Cross product with other set.
-
-        Parameters
-        ----------
-        other : RelationalAlgebraFrozenSet
-            The other set for the join.
-
-        Returns
-        -------
-        RelationalAlgebraFrozenSet
-            Resulting set of cross product.
-        """
         return self.equijoin(other)
 
     def fetch_one(self):
         if self.arity > 0 and self._table is not None:
             # See https://dask-sql.readthedocs.io/en/latest/pages/sql.html?highlight=head#limitatons
             # for difference between limit in SQL and head in dask
-            return next(DaskContextFactory.sql(select(self._table)).head(1).itertuples(name=None, index=False))
+            return next(
+                DaskContextFactory.sql(select(self._table))
+                .head(1)
+                .itertuples(name=None, index=False)
+            )
         elif self._count == 1:
             return tuple()
         return None
 
     def groupby(self, columns):
-        """
-        Apply group_by to a subset of columns.
-
-        Parameters
-        ----------
-        columns : Iterable[int, str]
-            The list of columns to group on.
-
-        Yields
-        -------
-        tuple(Union[int, str], RelationalAlgebraFrozenSet)
-            The different values for the group_by clause with the
-            associated result set.
-        """
-        if self._table is not None:
-            single_column = False
-            if isinstance(columns, (str, int)):
-                single_column = True
-                columns = (columns,)
-
-            groupby = [self.sql_columns.get(str(c)) for c in columns]
-            query = (
-                select(self.sql_columns)
-                .select_from(self._table)
-                .group_by(*groupby)
-            )
-            with SQLAEngineFactory.get_engine().connect() as conn:
-                res = conn.execute(query).fetchall()
-            for row in res:
-                group = self.selection(dict(zip(columns, row)))
-                if single_column:
-                    t_out = row[0]
-                else:
-                    t_out = tuple(row)
-                yield t_out, group
+        raise NotImplementedError()
 
     def projection(self, *columns, reindex=True):
-        """
-        Project the set on the specified columns. Creates a view with only the
-        specified columns.
-
-        Returns
-        -------
-        RelationalAlgebraFrozenSet
-            The projected set.
-        """
-        if len(columns) == 0 or self.arity == 0:
-            new = type(self)()
-            if len(self) > 0:
-                new._count = 1
-            return new
+        if self.is_dum():
+            return self.dum()
+        elif self.is_dee() or len(columns) == 0:
+            return self.dee()
 
         if reindex:
             proj_columns = [
@@ -359,7 +313,7 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         else:
             proj_columns = [self.sql_columns.get(str(c)) for c in columns]
         query = select(proj_columns).select_from(self._table)
-        return type(self).create_view_from_query(query, self._parent_tables)
+        return self._create_view_from_query(query)
 
     def __repr__(self):
         t = self._table
@@ -371,26 +325,26 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
                 res = self.is_dee() and other.is_dee()
             elif self.is_dum() or other.is_dum():
                 res = self.is_dum() and other.is_dum()
-            elif self._table_name == other._table_name:
+            elif (
+                self._table_name is not None
+                and self._table_name == other._table_name
+            ):
                 res = True
             elif not self._equal_sets_structure(other):
                 res = False
             else:
-                select_left = select(columns=self.sql_columns).select_from(
-                    self._table
-                )
+                select_left = select(self._table)
                 select_right = select(
-                    [other.sql_columns.get(c) for c in self.columns]
+                    *[other.sql_columns.get(c) for c in self.columns]
                 ).select_from(other._table)
                 diff_left = select_left.except_(select_right)
                 diff_right = select_right.except_(select_left)
-                with SQLAEngineFactory.get_engine().connect() as conn:
-                    if conn.execute(diff_left).fetchone() is not None:
-                        res = False
-                    elif conn.execute(diff_right).fetchone() is not None:
-                        res = False
-                    else:
-                        res = True
+                if len(DaskContextFactory.sql(diff_left).head(1)) > 0:
+                    res = False
+                elif len(DaskContextFactory.sql(diff_right).head(1)) > 0:
+                    res = False
+                else:
+                    res = True
             return res
         else:
             return super().__eq__(other)
@@ -404,15 +358,12 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
                 "Relational algebra set operators can only be used on sets"
                 " with same columns."
             )
+        ot = other._table.alias()
         query = sql_operator(
-            select(self.sql_columns).select_from(self._table),
-            select(
-                [other.sql_columns.get(c) for c in self.columns]
-            ).select_from(other._table),
+            select(self._table),
+            select([ot.c.get(c) for c in self.columns]).select_from(ot),
         )
-        return type(self).create_view_from_query(
-            query, self._parent_tables | other._parent_tables
-        )
+        return self._create_view_from_query(query)
 
     def __and__(self, other):
         if not isinstance(other, RelationalAlgebraFrozenSet):
@@ -440,68 +391,6 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         if self._table is None or other._table is None:
             return self.copy()
         return self._do_set_operation(other, except_)
-        # return self._do_sub_with_join(other)
-        # return self._do_sub_with_not_in(other)
-
-    def _do_sub_with_not_in(self, other):
-        """
-        Alternative set substract method using sql not in statement.
-        """
-        if not self._equal_sets_structure(other):
-            raise ValueError(
-                "Relational algebra set operators can only be used on sets"
-                " with same columns."
-            )
-
-        query = select(self.sql_columns).where(
-            tuple_(*self.sql_columns).notin_(
-                select(
-                    [other.sql_columns.get(c) for c in self.columns]
-                ).select_from(other._table)
-            )
-        )
-        query2 = select(self.sql_columns).where(
-            ~exists().where(
-                and_(
-                    *[
-                        self._table.c.get(col) == other._table.c.get(col)
-                        for col in self.columns
-                    ]
-                )
-            )
-        )
-        return type(self).create_view_from_query(
-            query2, self._parent_tables | other._parent_tables
-        )
-
-    def _do_sub_with_join(self, other):
-        """
-        Alternative set substract method using left outer join.
-        """
-        if not self._equal_sets_structure(other):
-            raise ValueError(
-                "Relational algebra set operators can only be used on sets"
-                " with same columns."
-            )
-        # Create an alias on the other table's name if we're joining on the
-        # same table.
-        other_join_table = other._table
-        if other._table_name == self._table_name:
-            other_join_table = other_join_table.alias()
-        on_clause = and_(
-            *[
-                self._table.c.get(col) == other_join_table.c.get(col)
-                for col in self.columns
-            ]
-        )
-        query = (
-            select(self.sql_columns)
-            .select_from(self._table.outerjoin(other_join_table, on_clause))
-            .where(other_join_table.c.values()[0] == None)
-        )
-        return type(self).create_view_from_query(
-            query, self._parent_tables | other._parent_tables
-        )
 
     def __hash__(self):
         if self._table is None:
@@ -512,22 +401,12 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
 class NamedRelationalAlgebraFrozenSet(
     RelationalAlgebraFrozenSet, abc.NamedRelationalAlgebraFrozenSet
 ):
-    """
-    A RelationalAlgebraFrozenSet with an underlying SQL representation.
-    Data for this set is either stored in a table in an SQL database,
-    or stored as a view which represents a query to be executed by the SQL
-    server.
-    """
-
     def __init__(self, columns=None, iterable=None):
         if isinstance(columns, RelationalAlgebraFrozenSet):
             iterable = columns
             columns = columns.columns
-        self._table_name = self._new_name()
         self._count = None
         self._table = None
-        self._is_view = False
-        self._parent_tables = {}
         self._init_columns = columns
         self._check_for_duplicated_columns(columns)
         if isinstance(iterable, RelationalAlgebraFrozenSet):
@@ -539,29 +418,20 @@ class NamedRelationalAlgebraFrozenSet(
             self._create_insert_table(iterable, columns)
 
     def _create_insert_table(self, data, columns=None):
-        """
-        Initialise the set with the provided data collection.
-        We use pandas to infer datatypes from the data and create
-        the appropriate sql statement.
-        We then read the table metadata and store it in self._table.
-
-        Parameters
-        ----------
-        data : Union[pd.DataFrame, Iterable[Any]]
-            The initial data for the set.
-        columns : List[str], optional
-            The column names, by default None.
-        """
         if data is None:
             data = []
         if not isinstance(data, pd.DataFrame):
             data = pd.DataFrame(data, columns=columns)
         else:
             data.columns = list(columns)
+        data.columns = data.columns.astype(str)
         data = data.drop_duplicates()
-        self._table = self._insert_dataframe_into_db(data)
-        self._parent_tables = {self._table}
-        self._try_to_create_index(self.columns)
+        self._table_name = self._new_name()
+        ddf = dd.from_pandas(data, npartitions=3)
+        DaskContextFactory.get_context().create_table(self._table_name, ddf)
+        self._table = table(
+            self._table_name, *[column(c) for c in ddf.columns]
+        )
         self._count = len(data)
 
     @staticmethod
@@ -575,34 +445,12 @@ class NamedRelationalAlgebraFrozenSet(
             )
 
     def _init_from_and_rename(self, other, columns):
-        """
-        Initialize this set using the other set's values while also
-        renaming the columns. Called on init when a new
-        list of columns is passed along with a set to init from.
-        This method creates a view pointing to the other table
-        with new column names.
-
-        Parameters
-        ----------
-        other : NamedRelationalAlgebraFrozenSet
-            The set to initialize from
-        columns : List[str]
-            The list of new column names
-        """
         if other._table is not None:
             query = select(
                 [c.label(str(nc)) for c, nc in zip(other.sql_columns, columns)]
             ).select_from(other._table)
-            view = CreateView(self._table_name, query)
-            with SQLAEngineFactory.get_engine().connect() as conn:
-                conn.execute(view)
-            t = table(self._table_name)
-            for c in query.c:
-                c._make_proxy(t)
-            self._table = t
-            self._is_view = True
+            self._table = query.subquery()
         self._count = other._count
-        self._parent_tables = other._parent_tables
 
     @classmethod
     def dee(cls):
@@ -631,55 +479,24 @@ class NamedRelationalAlgebraFrozenSet(
 
     @property
     def columns(self):
-        """
-        List of columns as string identifiers.
-
-        Returns
-        -------
-        Iterable[str]
-            Set of column names.
-        """
         if self._table is None:
-            return tuple() if self._init_columns is None else tuple(self._init_columns)
+            return (
+                tuple()
+                if self._init_columns is None
+                else tuple(self._init_columns)
+            )
         return tuple(self._table.c.keys())
 
     @property
     def sql_columns(self):
-        """
-        List of columns as sqlalchemy.schema.Columns collection.
-
-        Returns
-        -------
-        Iterable[sqlalchemy.schema.Columns]
-            Set of columns.
-        """
         if self._table is None:
-            return []
+            return {}
         return self._table.c
 
     def projection(self, *columns):
         return super().projection(*columns, reindex=False)
 
     def cross_product(self, other):
-        """
-        Cross product with other set.
-
-        Parameters
-        ----------
-        other : NamedRelationalAlgebraFrozenSet
-            The other set for the join.
-
-        Returns
-        -------
-        NamedRelationalAlgebraFrozenSet
-            Resulting set of cross product.
-
-        Raises
-        ------
-        ValueError
-            Raises ValueError when cross product is done on sets with
-            intersecting columns.
-        """
         res = self._dee_dum_product(other)
         if res is not None:
             return res
@@ -688,27 +505,10 @@ class NamedRelationalAlgebraFrozenSet(
                 "Cross product with common columns " "is not valid"
             )
 
-        query = select([self._table, other._table])
-        return type(self).create_view_from_query(
-            query, self._parent_tables | other._parent_tables
-        )
+        query = select(self._table, other._table)
+        return self._create_view_from_query(query)
 
     def naturaljoin(self, other):
-        """
-        Natural join on the two sets. Natural join creates a view
-        representing the join query. Indexes are created on all parent tables
-        for the join column tuple if needed.
-
-        Parameters
-        ----------
-        other : NamedRelationalAlgebraSet
-            The other set to join with.
-
-        Returns
-        -------
-        NamedRelationalAlgebraSet
-            The joined set.
-        """
         res = self._dee_dum_product(other)
         if res is not None:
             return res
@@ -745,8 +545,6 @@ class NamedRelationalAlgebraFrozenSet(
         NamedRelationalAlgebraFrozenSet
             The joined set
         """
-        self._try_to_create_index(on)
-        other._try_to_create_index(on)
         on_clause = and_(
             *[self._table.c.get(col) == other._table.c.get(col) for col in on]
         )
@@ -759,33 +557,20 @@ class NamedRelationalAlgebraFrozenSet(
         other_join_table = other._table
         if other._table_name == self._table_name:
             other_join_table = other_join_table.alias()
-        query = select(select_cols).select_from(
+        query = select(*select_cols).select_from(
             self._table.join(other_join_table, on_clause, isouter=isouter)
         )
-        return type(self).create_view_from_query(
-            query, self._parent_tables | other._parent_tables
-        )
+        return self._create_view_from_query(query)
 
     def __iter__(self):
-        """
-        Iterate over set values. Values are returned as namedtuples.
-
-        Yields
-        -------
-        Iterator[NamedTuple]
-            Set values.
-        """
-        named_tuple_type = namedtuple("tuple", self.columns)
-        if self.arity > 0 and len(self) > 0:
-            query = (
-                select(self.sql_columns).select_from(self._table).distinct()
-            )
-            with SQLAEngineFactory.get_engine().connect() as conn:
-                res = conn.execute(query)
-                for t in res:
-                    yield named_tuple_type(**t)
-        elif self.arity == 0 and len(self) > 0:
-            yield tuple()
+        try:
+            named_tuple_type = namedtuple("tuple", self.columns)
+        except ValueError:
+            # Invalid column names, just return a tuple
+            return super().__iter__(self)
+        values = self._fetchall(True).itertuples(name=None, index=False)
+        for v in values:
+            yield (named_tuple_type(**v))
 
     def equijoin(self, other, join_indices, return_mappings=False):
         raise NotImplementedError()
@@ -797,14 +582,12 @@ class NamedRelationalAlgebraFrozenSet(
                 f"{dst} is already a column name."
             )
         query = select(
-            [
+            *[
                 c.label(str(dst)) if c.name == src else c
                 for c in self.sql_columns
             ]
         ).select_from(self._table)
-        return type(self).create_view_from_query(
-            query, self._parent_tables, self._count
-        )
+        return self._create_view_from_query(query)
 
     def rename_columns(self, renames):
         # prevent duplicated destination columns
@@ -817,14 +600,12 @@ class NamedRelationalAlgebraFrozenSet(
                 f"Cannot rename non-existing columns: {not_found_cols}"
             )
         query = select(
-            [
+            *[
                 c.label(str(renames.get(c.name))) if c.name in renames else c
                 for c in self.sql_columns
             ]
         ).select_from(self._table)
-        return type(self).create_view_from_query(
-            query, self._parent_tables, self._count
-        )
+        self._create_view_from_query(query)
 
     def aggregate(self, group_columns, aggregate_function):
         """
@@ -902,10 +683,7 @@ class NamedRelationalAlgebraFrozenSet(
             if callable(f):
                 lambda_name = self._new_name("lambda")
                 SQLAEngineFactory.register_aggregate(
-                    lambda_name,
-                    len(c_),
-                    f,
-                    params=c_,
+                    lambda_name, len(c_), f, params=c_,
                 )
                 f_ = getattr(func, lambda_name)
             elif isinstance(f, str):
@@ -968,21 +746,17 @@ class NamedRelationalAlgebraFrozenSet(
         )
 
     def fetch_one(self):
-        if self.is_dee():
+        if self.arity > 0 and self._table is not None:
+            # See https://dask-sql.readthedocs.io/en/latest/pages/sql.html?highlight=head#limitatons
+            # for difference between limit in SQL and head in dask
+            return next(
+                DaskContextFactory.sql(select(self._table))
+                .head(1)
+                .itertuples(name="tuple", index=False)
+            )
+        elif self._count == 1:
             return tuple()
-        try:
-            named_tuple_type = namedtuple("tuple", self.columns)
-        except ValueError:
-            # Invalid column names, just return a tuple
-            return super().fetch_one()
-        if hasattr(self, "_one_row"):
-            res = self._one_row
-        else:
-            query = select(self.sql_columns).select_from(self._table).limit(1)
-            with SQLAEngineFactory.get_engine().connect() as conn:
-                res = conn.execute(query).fetchone()
-            self._one_row = res
-        return None if res is None else named_tuple_type(*res)
+        return None
 
     def to_unnamed(self):
         if self._table is not None:
@@ -1004,90 +778,14 @@ class NamedRelationalAlgebraFrozenSet(
 class RelationalAlgebraSet(
     RelationalAlgebraFrozenSet, abc.RelationalAlgebraSet
 ):
-    def __init__(self, iterable=None):
-        if isinstance(iterable, RelationalAlgebraFrozenSet):
-            iterable = iterable.deep_copy()
-        super().__init__(iterable=iterable)
-
-    def _reset_cached(self):
-        self._count = None
-        if hasattr(self, "_one_row"):
-            delattr(self, "_one_row")
-
-    def copy(self):
-        return self.deep_copy()
-
     def add(self, value):
-        self._reset_cached()
-        if self._table is None:
-            self._create_insert_table((value,))
-        else:
-            query = self._table.insert().values(self._normalise_element(value))
-            with SQLAEngineFactory.get_engine().connect() as conn:
-                conn.execute(query)
-        self._count = None
+        raise NotImplementedError()
 
     def discard(self, value):
-        self._reset_cached()
-        value = self._normalise_element(value)
-        query = self._table.delete()
-        for c, v in value.items():
-            query = query.where(self.sql_columns.get(c) == v)
-        with SQLAEngineFactory.get_engine().connect() as conn:
-            conn.execute(query)
-        self._count = None
+        raise NotImplementedError()
 
     def __ior__(self, other):
-        if isinstance(other, RelationalAlgebraFrozenSet):
-            if self.is_dee() or other.is_dee() or other._table is None:
-                return self
-            elif self._table is None:
-                self._table_name = self._new_name()
-                self._create_insert_table(other)
-                self._count = None
-                return self
-            else:
-                if not self._equal_sets_structure(other):
-                    raise ValueError(
-                        "Relational algebra set operators can only be used on sets"
-                        " with same columns."
-                    )
-                query = self._table.insert().from_select(
-                    self.columns,
-                    select(
-                        [other.sql_columns.get(c) for c in self.columns]
-                    ).select_from(other._table),
-                )
-                with SQLAEngineFactory.get_engine().connect() as conn:
-                    with log_performance(LOG, "IOR"):
-                        conn.execute(query)
-                self._reset_cached()
-                return self
-        else:
-            return super().__ior__(other)
+        raise NotImplementedError()
 
     def __isub__(self, other):
-        if isinstance(other, RelationalAlgebraFrozenSet):
-            if self.is_dee() and other.is_dee():
-                return self.dum()
-            if other._table is None or self._table is None:
-                return self
-            if not self._equal_sets_structure(other):
-                raise ValueError(
-                    "Relational algebra set operators can only be used on sets"
-                    " with same columns."
-                )
-            query = self._table.delete().where(
-                tuple_(*self.sql_columns).in_(
-                    select(
-                        [other.sql_columns.get(c) for c in self.columns]
-                    ).select_from(other._table)
-                )
-            )
-            with SQLAEngineFactory.get_engine().connect() as conn:
-                with log_performance(LOG, "ISUB"):
-                    conn.execute(query)
-            self._reset_cached()
-            return self
-        else:
-            return super().__isub__(other)
+        raise NotImplementedError()
