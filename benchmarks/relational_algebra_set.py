@@ -1,11 +1,22 @@
+import logging
 import numpy as np
 import pandas as pd
 from functools import reduce
 from neurolang.utils.relational_algebra_set import (
+    dask_helpers,
     pandas,
-    sql,
+    dask_sql,
 )
 import sqlalchemy
+
+logger = logging.getLogger("dask_sql.context")
+logger.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+ch.setFormatter(
+    logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+)
+logger.addHandler(ch)
 
 
 class TimeLeftNaturalJoins:
@@ -15,7 +26,7 @@ class TimeLeftNaturalJoins:
         [3],
         [6, 12],
         [0.75],
-        [pandas, sql],
+        [pandas, dask_sql],
     ]
 
     param_names = [
@@ -80,12 +91,13 @@ class TimeLeftNaturalJoins:
 
 class TimeChainedNaturalJoins:
     params = [
-        [10 ** 4, 10 ** 5],
+        [10 ** 3],
+        # [10 ** 4, 10 ** 5],
         [10],
         [3],
         [6, 12],
         [0.75],
-        [pandas, sql],
+        [pandas, dask_sql],
     ]
 
     param_names = [
@@ -97,7 +109,7 @@ class TimeChainedNaturalJoins:
         "RAS module to test",
     ]
 
-    # timeout = 60 * 3
+    timeout = 60 * 3
 
     def setup(self, N, ncols, njoin_columns, njoins, distinct_r, module):
         """
@@ -176,7 +188,7 @@ class TimeEquiJoin:
         [3],
         [6, 12],
         [0.75],
-        [pandas, sql],
+        [pandas, dask_sql],
     ]
 
     param_names = [
@@ -231,22 +243,15 @@ class TimeEquiJoin:
             lambda a, b: a.equijoin(b, [(i, i) for i in range(njoin_columns)]),
             self.sets,
         )
+
         post_process_result(self.sets, res)
 
 
 def post_process_result(sets, result):
-    if isinstance(result, sql.RelationalAlgebraFrozenSet):
+    if isinstance(result, dask_sql.RelationalAlgebraFrozenSet):
+        # Fetch one element from the result set
+        result.fetch_one()
         # Fetch the results from the view to execute the join query
-        query = sqlalchemy.select(result._table.c).select_from(result._table)
-        with sql.SQLAEngineFactory.get_engine().connect() as conn:
-            conn.execute(query).fetchall()
-
-        # Analyze the query plan
-        qp = "EXPLAIN QUERY PLAN %s" % (str(query))
-        with sql.SQLAEngineFactory.get_engine().connect() as conn:
-            eqp = conn.execute(qp).fetchall()
-            for i, s in enumerate(sets):
-                print("s{} : {}".format(i, s._table_name))
-            print("SQL Query Plan: ")
-            for r in eqp:
-                print(r)
+        # query = sqlalchemy.select(result._table)
+        # qr = dask_helpers.DaskContextFactory.sql(query)
+        # qr.compute()
