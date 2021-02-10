@@ -2,21 +2,45 @@ import logging
 import numpy as np
 import pandas as pd
 from functools import reduce
+
 from neurolang.utils.relational_algebra_set import (
-    dask_helpers,
     pandas,
     dask_sql,
 )
-import sqlalchemy
 
-logger = logging.getLogger("dask_sql.context")
-logger.setLevel(logging.DEBUG)
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-ch.setFormatter(
-    logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-)
-logger.addHandler(ch)
+LOGGING_CONFIG = {
+    'version': 1,
+    "formatters": {
+        "standard": {
+            "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+        },
+    },
+    "handlers": {
+        "default": {
+            "level": "INFO",
+            "formatter": "standard",
+            "class": "logging.StreamHandler",
+        },
+    },
+    "loggers": {
+        "": {  # root logger
+            "handlers": ["default"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        "neurolang.utils.relational_algebra_set": {
+            "handlers": ["default"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "dask_sql.context": {
+            "handlers": ["default"],
+            "level": "DEBUG",
+            "propagate": False,
+        },
+    },
+}
+logging.config.dictConfig(LOGGING_CONFIG)
 
 
 class TimeLeftNaturalJoins:
@@ -91,8 +115,7 @@ class TimeLeftNaturalJoins:
 
 class TimeChainedNaturalJoins:
     params = [
-        [10 ** 3],
-        # [10 ** 4, 10 ** 5],
+        [10 ** 4, 10 ** 5],
         [10],
         [3],
         [6, 12],
@@ -249,9 +272,6 @@ class TimeEquiJoin:
 
 def post_process_result(sets, result):
     if isinstance(result, dask_sql.RelationalAlgebraFrozenSet):
-        # Fetch one element from the result set
-        result.fetch_one()
-        # Fetch the results from the view to execute the join query
-        # query = sqlalchemy.select(result._table)
-        # qr = dask_helpers.DaskContextFactory.sql(query)
-        # qr.compute()
+        # Fetch one seems slower than _fetchall. Need to investigate.
+        result._fetchall()
+        # result.fetch_one()

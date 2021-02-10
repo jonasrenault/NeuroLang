@@ -1,42 +1,43 @@
 from collections import namedtuple
 from collections.abc import Iterable
-
-from neurolang.type_system import Unknown
 from typing import Tuple
 
 import logging
-import numpy as np
 import types
-from neurolang.utils.relational_algebra_set.sql_helpers import (
-    CreateTableAs,
-    CreateView,
-    map_dtype_to_sqla,
-    SQLAEngineFactory,
-)
 import uuid
-
-from . import abstract as abc
-from ..various import log_performance
-from .dask_helpers import DaskContextFactory
+import numpy as np
 import pandas as pd
 import dask.dataframe as dd
 
+from neurolang.type_system import Unknown
+from neurolang.utils.relational_algebra_set.sql_helpers import (
+    SQLAEngineFactory,
+)
+from . import abstract as abc
+from .dask_helpers import DaskContextFactory
+
 from sqlalchemy import (
-    Table,
     column,
     table,
-    MetaData,
-    Index,
     func,
     and_,
     select,
     text,
-    tuple_,
     literal_column,
     literal,
 )
-from sqlalchemy.sql import table, intersect, union, except_, exists
-from sqlalchemy.dialects import postgresql
+from sqlalchemy.sql import table, intersect, union, except_
+
+# Single threaded scheduler for debugging
+# import dask
+# dask.config.set(scheduler='single-threaded')
+# Distributed scheduler works well on single machine as well.
+# It is recommended and provides dashboard available at
+# http://localhost:8787/status
+from dask.distributed import Client
+
+client = Client(processes=False)
+
 
 LOG = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
     def __init__(self, iterable=None):
         if isinstance(iterable, RelationalAlgebraFrozenSet):
             self._init_from(iterable)
-        else:
+        elif iterable is not None:
             self._create_insert_table(iterable)
 
     @staticmethod
@@ -62,20 +63,35 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         self._table = other._table
         self._count = other._count
 
-    def _create_insert_table(self, data):
-        if data is not None:
-            data = pd.DataFrame(data)
-            data.columns = data.columns.astype(str)
-            if len(data.columns) > 0:
-                self._table_name = self._new_name()
-                ddf = dd.from_pandas(data, npartitions=3)
-                DaskContextFactory.get_context().create_table(
-                    self._table_name, ddf
-                )
-                self._table = table(
-                    self._table_name, *[column(c) for c in ddf.columns]
-                )
-            self._count = len(data)
+    def _create_insert_table(self, data, columns=None):
+        """
+        See https://docs.dask.org/en/latest/best-practices.html
+        for best pratices on how to create / manage dask arrays.
+        """
+        if not isinstance(data, pd.DataFrame):
+            data = pd.DataFrame(data, columns=columns)
+        elif columns is not None:
+            data.columns = list(columns)
+        data.columns = data.columns.astype(str)
+        # partitions should not be too small, yet fit nicely in memory.
+        # The amount of RAM available on the machine should be greater
+        # than nb of core x partition size.
+        # Here we create partitions of less than 500mb based on the
+        # original df size.
+        df_size = data.memory_usage(deep=True).sum() / (1 << 20)
+        npartitions = 1 + int(df_size) // 500
+        LOG.info(
+            "Creating dask dataframe with {} partitions"
+            " from {:0.2f} Mb pandas df.".format(
+                npartitions, df_size
+            )
+        )
+        ddf = dd.from_pandas(data, npartitions=npartitions)
+        self._table_name = self._new_name()
+        DaskContextFactory.get_context().create_table(self._table_name, ddf)
+        self._table = table(
+            self._table_name, *[column(c) for c in ddf.columns]
+        )
 
     @classmethod
     def dee(cls):
@@ -417,24 +433,9 @@ class NamedRelationalAlgebraFrozenSet(
             else:
                 self._init_from_and_rename(iterable, columns)
         elif columns is not None and len(columns) > 0:
+            if iterable is None:
+                iterable = []
             self._create_insert_table(iterable, columns)
-
-    def _create_insert_table(self, data, columns=None):
-        if data is None:
-            data = []
-        if not isinstance(data, pd.DataFrame):
-            data = pd.DataFrame(data, columns=columns)
-        else:
-            data.columns = list(columns)
-        data.columns = data.columns.astype(str)
-        data = data.drop_duplicates()
-        self._table_name = self._new_name()
-        ddf = dd.from_pandas(data, npartitions=3)
-        DaskContextFactory.get_context().create_table(self._table_name, ddf)
-        self._table = table(
-            self._table_name, *[column(c) for c in ddf.columns]
-        )
-        self._count = len(data)
 
     @staticmethod
     def _check_for_duplicated_columns(columns):
