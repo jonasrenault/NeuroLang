@@ -1,6 +1,7 @@
 import logging
 import numpy as np
 import pandas as pd
+import dask.dataframe as dd
 from functools import reduce
 
 from neurolang.utils.relational_algebra_set import (
@@ -117,6 +118,34 @@ class TimeChainedNaturalJoins:
         post_process_result(self.sets, res)
 
 
+class TimeRawMerge:
+    params = [[10 ** 4, 10 ** 5], [10], [3], [6, 12], [0.75], [dd, pd]]
+
+    param_names = [
+        "rows",
+        "cols",
+        "number of join columns",
+        "number of chained joins",
+        "ratio of dictinct elements",
+        "lib",
+    ]
+
+    def setup(self, N, ncols, njoin_columns, njoins, distinct_r, lib):
+        self.dfs = _generate_dataframes(
+            N, ncols, njoin_columns, njoins, distinct_r
+        )
+        if lib == dd:
+            self.dfs = [dd.from_pandas(d, npartitions=1) for d in self.dfs]
+
+    def time_merge(
+        self, N, ncols, njoin_columns, njoins, distinct_r, lib
+    ):
+        on = list(self.dfs[0].columns[:njoin_columns])
+        res = reduce(lambda a, b: lib.merge(a, b, on=on), self.dfs)
+        if lib == dd:
+            df = res.compute()
+
+
 class TimeEquiJoin:
     params = [
         [10 ** 4, 10 ** 5],
@@ -155,6 +184,7 @@ class TimeEquiJoin:
 
 def post_process_result(sets, result):
     if isinstance(result, dask_sql.RelationalAlgebraFrozenSet):
+        print(result)
         # Fetch one seems slower than _fetchall. Need to investigate.
         result._fetchall()
         # result.fetch_one()
