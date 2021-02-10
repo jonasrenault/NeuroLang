@@ -3,7 +3,9 @@ import numpy as np
 import pandas as pd
 import dask.dataframe as dd
 from functools import reduce
-
+from sqlalchemy import table, column, and_, select
+from sqlalchemy.dialects import postgresql
+from dask_sql import Context
 from neurolang.utils.relational_algebra_set import (
     pandas,
     dask_sql,
@@ -18,7 +20,7 @@ LOGGING_CONFIG = {
     },
     "handlers": {
         "default": {
-            "level": "INFO",
+            "level": "DEBUG",
             "formatter": "standard",
             "class": "logging.StreamHandler",
         },
@@ -79,10 +81,10 @@ class TimeLeftNaturalJoins:
 
 class TimeChainedNaturalJoins:
     params = [
-        [10 ** 4, 10 ** 5],
+        [10 ** 3],
         [10],
         [3],
-        [6, 12],
+        [10],
         [0.75],
         [pandas, dask_sql],
     ]
@@ -137,13 +139,67 @@ class TimeRawMerge:
         if lib == dd:
             self.dfs = [dd.from_pandas(d, npartitions=1) for d in self.dfs]
 
-    def time_merge(
-        self, N, ncols, njoin_columns, njoins, distinct_r, lib
-    ):
+    def time_merge(self, N, ncols, njoin_columns, njoins, distinct_r, lib):
         on = list(self.dfs[0].columns[:njoin_columns])
         res = reduce(lambda a, b: lib.merge(a, b, on=on), self.dfs)
         if lib == dd:
             df = res.compute()
+
+
+class TimeDaskSQLJoins:
+    params = [[10 ** 5], [10], [3], [6], [0.75]]
+
+    param_names = [
+        "rows",
+        "cols",
+        "number of join columns",
+        "number of chained joins",
+        "ratio of dictinct elements",
+    ]
+
+    def setup(self, N, ncols, njoin_columns, njoins, distinct_r):
+        self.dfs = _generate_dataframes(
+            N, ncols, njoin_columns, njoins, distinct_r
+        )
+        self.dfs = [dd.from_pandas(d, npartitions=1) for d in self.dfs]
+        self.join_cols = [
+            c for c in self.dfs[0].columns if c in self.dfs[1].columns
+        ]
+        self.ctx = Context()
+        self._create_tables()
+        self._create_sql_query()
+
+    def _create_tables(self):
+        self.tables = []
+        for i, df in enumerate(self.dfs):
+            _table_name = f"table_{i:03}"
+            self.ctx.create_table(_table_name, df)
+            _table = table(_table_name, *[column(c) for c in df.columns])
+            self.tables.append(_table)
+
+    def _create_sql_query(self):
+        left = self.tables[0]
+        joinq = left
+        select_cols = list(left.c)
+        for right in self.tables[1:]:
+            on = and_(
+                left.c.get(col) == right.c.get(col) for col in self.join_cols
+            )
+            joinq = joinq.join(right, on)
+            select_cols += [c for c in right.c if c.name not in self.join_cols]
+        query = select(*select_cols).select_from(joinq)
+        self.sql_query = str(
+            query.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+
+    def time_joins(self, N, ncols, njoin_columns, njoins, distinct_r):
+        print(f"executing SQL: {self.sql_query}")
+        res = self.ctx.sql(self.sql_query)
+        res.compute()
+        return res
 
 
 class TimeEquiJoin:
