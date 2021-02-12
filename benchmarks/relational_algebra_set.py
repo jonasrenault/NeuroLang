@@ -1,4 +1,5 @@
 import logging
+import time
 import numpy as np
 import pandas as pd
 import dask.dataframe as dd
@@ -147,7 +148,7 @@ class TimeRawMerge:
 
 
 class TimeDaskSQLJoins:
-    params = [[10 ** 5], [10], [3], [6], [0.75]]
+    params = [[10 ** 4], [10], [3], [6], [0.75]]
 
     param_names = [
         "rows",
@@ -196,9 +197,18 @@ class TimeDaskSQLJoins:
         )
 
     def time_joins(self, N, ncols, njoin_columns, njoins, distinct_r):
-        print(f"executing SQL: {self.sql_query}")
+        start = time.perf_counter()
+        print(f"Processing SQL query: {self.sql_query}")
         res = self.ctx.sql(self.sql_query)
+        stop = time.perf_counter()
+        print(f"Processing SQL query took {stop-start:0.4f} s.")
+        start = time.perf_counter()
+        print("Computing dask dataframe")
         res.compute()
+        stop = time.perf_counter()
+        print(f"Computing dask dataframe took {stop-start:0.4f} s.")
+        # Visualize task graph
+        # res.visualize('taskgraph.png')
         return res
 
 
