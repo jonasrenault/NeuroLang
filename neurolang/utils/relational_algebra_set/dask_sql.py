@@ -162,9 +162,9 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         return self._count
 
     def __iter__(self):
-        values = self._fetchall(True).itertuples(name=None, index=False)
-        for v in values:
-            yield (tuple(v))
+        if self.is_dee():
+            return iter([tuple()])
+        return self._fetchall(True).itertuples(name=None, index=False)
 
     def __contains__(self, element):
         if self.arity == 0:
@@ -211,7 +211,7 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         if callable(select_criteria):
             lambda_name = self._new_name("lambda")
             params = [(name, np.float64) for name in self.columns]
-            DaskContextFactory.register_function(select_criteria, lambda_name, params)
+            DaskContextFactory.register_function(select_criteria, lambda_name, params, np.bool8)
             f_ = getattr(func, lambda_name)
             query = query.where(f_(*self.sql_columns))
         elif isinstance(
@@ -224,7 +224,7 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
                 if callable(v):
                     lambda_name = self._new_name("lambda")
                     c_ = self.sql_columns.get(str(k))
-                    DaskContextFactory.register_function(v, lambda_name, [(str(k), np.float64)])
+                    DaskContextFactory.register_function(v, lambda_name, [(str(k), np.float64)], np.bool8)
                     f_ = getattr(func, lambda_name)
                     query = query.where(f_(c_))
                 elif isinstance(
@@ -563,13 +563,13 @@ class NamedRelationalAlgebraFrozenSet(
 
     def __iter__(self):
         try:
-            named_tuple_type = namedtuple("tuple", self.columns)
+            namedtuple("tuple", self.columns)
         except ValueError:
             # Invalid column names, just return a tuple
             return super().__iter__(self)
-        values = self._fetchall(True).itertuples(name=None, index=False)
-        for v in values:
-            yield (named_tuple_type(*v))
+        if self.is_dee():
+            return iter([tuple()])
+        return self._fetchall(True).itertuples(name="tuple", index=False)
 
     def equijoin(self, other, join_indices, return_mappings=False):
         raise NotImplementedError()
@@ -604,7 +604,7 @@ class NamedRelationalAlgebraFrozenSet(
                 for c in self.sql_columns
             ]
         ).select_from(self._table)
-        self._create_view_from_query(query)
+        return self._create_view_from_query(query)
 
     def aggregate(self, group_columns, aggregate_function):
         """
@@ -706,12 +706,8 @@ class NamedRelationalAlgebraFrozenSet(
         for dst_column, operation in eval_expressions.items():
             if callable(operation):
                 lambda_name = self._new_name("lambda")
-                SQLAEngineFactory.register_function(
-                    lambda_name,
-                    len(self.sql_columns),
-                    operation,
-                    params=self.sql_columns.values(),
-                )
+                params = [(name, np.float64) for name in self.columns]
+                DaskContextFactory.register_function(operation, lambda_name, params, np.float64)
                 f_ = getattr(func, lambda_name)
                 proj_columns.append(
                     f_(*self.sql_columns).label(str(dst_column))
@@ -731,7 +727,7 @@ class NamedRelationalAlgebraFrozenSet(
                 proj_columns.append(literal(operation).label(str(dst_column)))
 
         query = select(proj_columns).select_from(self._table)
-        return type(self).create_view_from_query(query, self._parent_tables)
+        return self._create_view_from_query(query)
 
     def _extended_projection_on_dee(self, eval_expressions):
         """
@@ -762,11 +758,9 @@ class NamedRelationalAlgebraFrozenSet(
     def to_unnamed(self):
         if self._table is not None:
             query = select(
-                [c.label(str(i)) for i, c in enumerate(self.sql_columns)]
+                *[c.label(str(i)) for i, c in enumerate(self.sql_columns)]
             ).select_from(self._table)
-            return RelationalAlgebraFrozenSet.create_view_from_query(
-                query, self._parent_tables, self._count
-            )
+            return RelationalAlgebraFrozenSet()._create_view_from_query(query)
         return RelationalAlgebraFrozenSet()
 
     def projection_to_unnamed(self, *columns):

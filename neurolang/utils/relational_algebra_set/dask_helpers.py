@@ -27,10 +27,10 @@ class DaskContextFactory(ABC):
         )
 
     @classmethod
-    def register_function(cls, f_, fname, params):
+    def register_function(cls, f_, fname, params, return_type):
         if len(params) == 1:
             # We expect only one param so we just pass it to the lambda func
-            cls.get_context().register_function(f_, fname, params, np.bool8)
+            cls.get_context().register_function(f_, fname, params, return_type)
         else:
             # We expect multiple params, so we wrap them in a tuple / named tuple
             named = False
@@ -47,7 +47,7 @@ class DaskContextFactory(ABC):
                     return f_(named_tuple_type(*values))
                 else:
                     return f_(tuple(values))
-            cls.get_context().register_function(wrapped_lambda, fname, params, np.bool8)
+            cls.get_context().register_function(wrapped_lambda, fname, params, return_type)
 
 
 
