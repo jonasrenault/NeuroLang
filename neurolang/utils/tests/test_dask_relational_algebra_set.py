@@ -64,3 +64,17 @@ def test_is_empty():
     ras_a = RelationalAlgebraFrozenSet([(i, i * 2) for i in range(5)])
     assert not ras_a.is_empty()
     assert (ras_a - ras_a).is_empty()
+
+def test_iter():
+    a = [(i, i * j) for i in (1, 2) for j in (2, 3, 4)]
+    a += a[3:]
+    ras_a = RelationalAlgebraFrozenSet(a)
+    res = list(iter(ras_a))
+    assert res == a[:6]
+
+def test_named_iter():
+    a = [(i, i * j) for i in (1, 2) for j in (2, 3, 4)]
+    a += a[3:]
+    ras_a = NamedRelationalAlgebraFrozenSet(("y", "x"), a)
+    res = list(iter(ras_a))
+    assert res == a[:6]

@@ -2,6 +2,7 @@ from collections import namedtuple
 from collections.abc import Iterable
 from typing import Tuple
 
+import re
 import logging
 import types
 import uuid
@@ -150,9 +151,9 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
 
     def __len__(self):
         if self._count is None:
-            if self._table is not None:
+            if self._table is not None and self.arity > 0:
                 q = select([func.count()]).select_from(
-                    select(self._table).distinct()
+                    select(self._table).distinct().subquery()
                 )
                 res = DaskContextFactory.sql(q).compute()
                 self._count = 0 if len(res) == 0 else res.squeeze()
@@ -209,32 +210,27 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         query = select(self._table)
         if callable(select_criteria):
             lambda_name = self._new_name("lambda")
-            SQLAEngineFactory.register_function(
-                lambda_name,
-                len(self.sql_columns),
-                select_criteria,
-                params=self.sql_columns.values(),
-            )
+            params = [(name, np.float64) for name in self.columns]
+            DaskContextFactory.register_function(select_criteria, lambda_name, params)
             f_ = getattr(func, lambda_name)
             query = query.where(f_(*self.sql_columns))
         elif isinstance(
             select_criteria, abc.RelationalAlgebraStringExpression
         ):
-            query = query.where(text(select_criteria))
+            # replace == used in python by = used in SQL
+            query = query.where(text(re.sub("==", "=", str(select_criteria))))
         else:
             for k, v in select_criteria.items():
                 if callable(v):
                     lambda_name = self._new_name("lambda")
                     c_ = self.sql_columns.get(str(k))
-                    SQLAEngineFactory.register_function(
-                        lambda_name, 1, v, [c_]
-                    )
+                    DaskContextFactory.register_function(v, lambda_name, [(str(k), np.float64)])
                     f_ = getattr(func, lambda_name)
                     query = query.where(f_(c_))
                 elif isinstance(
                     select_criteria, abc.RelationalAlgebraStringExpression
                 ):
-                    query = query.where(text(v))
+                    query = query.where(text(re.sub("==", "=", str(v))))
                 else:
                     query = query.where(self.sql_columns.get(str(k)) == v)
         return self._create_view_from_query(query)
@@ -450,7 +446,7 @@ class NamedRelationalAlgebraFrozenSet(
     def _init_from_and_rename(self, other, columns):
         if other._table is not None:
             query = select(
-                [c.label(str(nc)) for c, nc in zip(other.sql_columns, columns)]
+                *[c.label(str(nc)) for c, nc in zip(other.sql_columns, columns)]
             ).select_from(other._table)
             self._table = query.subquery()
         self._count = other._count
@@ -573,7 +569,7 @@ class NamedRelationalAlgebraFrozenSet(
             return super().__iter__(self)
         values = self._fetchall(True).itertuples(name=None, index=False)
         for v in values:
-            yield (named_tuple_type(**v))
+            yield (named_tuple_type(*v))
 
     def equijoin(self, other, join_indices, return_mappings=False):
         raise NotImplementedError()
@@ -641,10 +637,9 @@ class NamedRelationalAlgebraFrozenSet(
             raise ValueError("Cannot group on repeated columns")
 
         distinct_sub_query = (
-            select(self.sql_columns)
-            .select_from(self._table)
+            select(self._table)
             .distinct()
-            .alias()
+            .subquery()
         )
         agg_cols = self._build_aggregate_functions(
             group_columns, aggregate_function, distinct_sub_query
