@@ -589,7 +589,7 @@ class RelationalAlgebraProvenanceExpressionSemringSolver(
                 cols,
                 {
                     projection.relation.provenance_column:
-                    self._semiring_agg_sum
+                    sum
                 }
             )
         return ProvenanceAlgebraSet(
