@@ -11,9 +11,6 @@ import pandas as pd
 import dask.dataframe as dd
 
 from neurolang.type_system import Unknown
-from neurolang.utils.relational_algebra_set.sql_helpers import (
-    SQLAEngineFactory,
-)
 from . import abstract as abc
 from .dask_helpers import DaskContextFactory
 
@@ -48,6 +45,7 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
     _count = None
     _table_name = None
     _table = None
+    _container = None
 
     def __init__(self, iterable=None):
         if isinstance(iterable, RelationalAlgebraFrozenSet):
@@ -61,6 +59,7 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
 
     def _init_from(self, other):
         self._table_name = other._table_name
+        self._container = other._container
         self._table = other._table
         self._count = other._count
 
@@ -87,6 +86,7 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         )
         ddf = dd.from_pandas(data, npartitions=npartitions)
         self._table_name = self._new_name()
+        self._container = ddf.persist()
         DaskContextFactory.get_context().create_table(self._table_name, ddf)
         self._table = table(
             self._table_name, *[column(c) for c in ddf.columns]
@@ -120,6 +120,11 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         return type(self).create_view_from(self)
 
     def is_empty(self):
+        """
+        Using len(self.container.index) == 0 might be faster
+        than doing self.fetch_one() is None.
+        See https://stackoverflow.com/questions/50206730/how-to-check-if-dask-dataframe-is-empty
+        """
         if self._count is not None:
             return self._count == 0
         else:
@@ -147,16 +152,34 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
             return {}
         return self._table.c
 
+    @property
+    def container(self):
+        """
+        Accessing the container will evaluate the SQL query representing this set and
+        persist the results in Dask.
+        """
+        if self._container is None:
+            if self._table is not None and self.arity > 0:
+                q = select(self._table)
+                # Persist will save the dask dataframe in distributed memory
+                # This effectively caches the results of the sql query
+                self._container = DaskContextFactory.sql(q).persist()
+                self._table_name = self._new_name()
+                DaskContextFactory.get_context().create_table(
+                    self._table_name, self._container
+                )
+                self._table = table(
+                    self._table_name,
+                    *[column(c) for c in self._container.columns],
+                )
+        return self._container
+
     def __len__(self):
         if self._count is None:
-            if self._table is not None and self.arity > 0:
-                q = select([func.count()]).select_from(
-                    select(self._table).distinct().subquery()
-                )
-                res = DaskContextFactory.sql(q).compute()
-                self._count = 0 if len(res) == 0 else res.squeeze()
-            else:
+            if self.container is None:
                 self._count = 0
+            else:
+                self._count = len(self.container.drop_duplicates())
         return self._count
 
     def __iter__(self):
@@ -199,6 +222,7 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
     def _create_view_from_query(self, query):
         output = type(self)()
         output._table = query.subquery()
+        output._container = None
         return output
 
     def selection(self, select_criteria):
@@ -257,14 +281,15 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         return self._fetchall(True)
 
     def _fetchall(self, drop_duplicates=False):
-        if self.arity > 0 and self._table is not None:
-            df = DaskContextFactory.sql(select(self._table)).compute()
-            if drop_duplicates:
-                df = df.drop_duplicates()
-            return df
-        elif self._count == 1:
-            return pd.DataFrame([()])
-        return pd.DataFrame([])
+        if self.container is None:
+            if self._count == 1:
+                return pd.DataFrame([()])
+            else:
+                return pd.DataFrame([])
+        df = self.container.compute()
+        if drop_duplicates:
+            df = df.drop_duplicates()
+        return df
 
     def equijoin(self, other, join_indices=None):
         res = self._dee_dum_product(other)
@@ -297,20 +322,16 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         return self.equijoin(other)
 
     def fetch_one(self):
-        if self.arity > 0 and self._table is not None:
-            # See https://dask-sql.readthedocs.io/en/latest/pages/sql.html?highlight=head#limitatons
-            # for difference between limit in SQL and head in dask
-            try:
-                return next(
-                    DaskContextFactory.sql(select(self._table))
-                    .head(1)
-                    .itertuples(name=None, index=False)
-                )
-            except StopIteration:
-                return None
-        elif self._count == 1:
-            return tuple()
-        return None
+        if self.container is None:
+            if self._count == 1:
+                return tuple()
+            return None
+        try:
+            return next(
+                self.container.head(1).itertuples(name=None, index=False)
+            )
+        except StopIteration:
+            return None
 
     def groupby(self, columns):
         raise NotImplementedError()
@@ -423,6 +444,7 @@ class NamedRelationalAlgebraFrozenSet(
             columns = columns.columns
         self._count = None
         self._table = None
+        self._container = None
         self._init_columns = columns
         self._check_for_duplicated_columns(columns)
         if isinstance(iterable, RelationalAlgebraFrozenSet):
@@ -722,20 +744,16 @@ class NamedRelationalAlgebraFrozenSet(
         )
 
     def fetch_one(self):
-        if self.arity > 0 and self._table is not None:
-            # See https://dask-sql.readthedocs.io/en/latest/pages/sql.html?highlight=head#limitatons
-            # for difference between limit in SQL and head in dask
-            try:
-                return next(
-                    DaskContextFactory.sql(select(self._table))
-                    .head(1)
-                    .itertuples(name="tuple", index=False)
-                )
-            except StopIteration:
-                return None
-        elif self._count == 1:
-            return tuple()
-        return None
+        if self.container is None:
+            if self._count == 1:
+                return tuple()
+            return None
+        try:
+            return next(
+                self.container.head(1).itertuples(name="tuple", index=False)
+            )
+        except StopIteration:
+            return None
 
     def to_unnamed(self):
         if self._table is not None:
