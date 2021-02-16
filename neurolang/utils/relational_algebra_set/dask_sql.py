@@ -34,7 +34,7 @@ from sqlalchemy.sql import table, intersect, union, except_
 # http://localhost:8787/status
 from dask.distributed import Client
 
-client = Client(processes=False, n_workers=4, threads_per_worker=1)
+client = Client(processes=False)
 
 
 LOG = logging.getLogger(__name__)
