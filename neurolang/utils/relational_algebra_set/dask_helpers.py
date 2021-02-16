@@ -1,4 +1,4 @@
-import numpy as np
+import dask.dataframe as dd
 from collections import namedtuple
 from abc import ABC
 from dask_sql import Context
@@ -50,4 +50,11 @@ class DaskContextFactory(ABC):
             cls.get_context().register_function(wrapped_lambda, fname, params, return_type)
 
 
+    @classmethod
+    def register_aggregation(cls, f_, fname, params, return_type):
+        # Note: aggregation in dask is applied in chunks, first to each partition individually,
+        # then again to the results of all the chunk aggregations. So transformative aggregation
+        # will not work properly, for instance sum(x) - 1 will result in sum(x) - 2 in the end.
+        agg= dd.Aggregation(fname, lambda chunk: chunk.agg(f_), lambda total: total.agg(f_))
+        cls.get_context().register_aggregation(agg, fname, params, return_type)
 

@@ -7,6 +7,12 @@ if os.getenv("NEURO_RAS_BACKEND", "pandas") == "sql":
         RelationalAlgebraFrozenSet,
         RelationalAlgebraSet,
     )
+elif os.getenv("NEURO_RAS_BACKEND", "dask") == "dask":
+    from .dask_sql import (
+        NamedRelationalAlgebraFrozenSet,
+        RelationalAlgebraFrozenSet,
+        RelationalAlgebraSet,
+    )
 else:
     from .pandas import (
         NamedRelationalAlgebraFrozenSet,

@@ -37,7 +37,7 @@ from sqlalchemy.sql import table, intersect, union, except_
 # http://localhost:8787/status
 from dask.distributed import Client
 
-client = Client(processes=False)
+client = Client(processes=False, n_workers=4, threads_per_worker=1)
 
 
 LOG = logging.getLogger(__name__)
@@ -83,9 +83,7 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         npartitions = 1 + int(df_size) // 500
         LOG.info(
             "Creating dask dataframe with {} partitions"
-            " from {:0.2f} Mb pandas df.".format(
-                npartitions, df_size
-            )
+            " from {:0.2f} Mb pandas df.".format(npartitions, df_size)
         )
         ddf = dd.from_pandas(data, npartitions=npartitions)
         self._table_name = self._new_name()
@@ -211,7 +209,9 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         if callable(select_criteria):
             lambda_name = self._new_name("lambda")
             params = [(name, np.float64) for name in self.columns]
-            DaskContextFactory.register_function(select_criteria, lambda_name, params, np.bool8)
+            DaskContextFactory.register_function(
+                select_criteria, lambda_name, params, np.bool8
+            )
             f_ = getattr(func, lambda_name)
             query = query.where(f_(*self.sql_columns))
         elif isinstance(
@@ -224,7 +224,9 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
                 if callable(v):
                     lambda_name = self._new_name("lambda")
                     c_ = self.sql_columns.get(str(k))
-                    DaskContextFactory.register_function(v, lambda_name, [(str(k), np.float64)], np.bool8)
+                    DaskContextFactory.register_function(
+                        v, lambda_name, [(str(k), np.float64)], np.bool8
+                    )
                     f_ = getattr(func, lambda_name)
                     query = query.where(f_(c_))
                 elif isinstance(
@@ -446,7 +448,10 @@ class NamedRelationalAlgebraFrozenSet(
     def _init_from_and_rename(self, other, columns):
         if other._table is not None:
             query = select(
-                *[c.label(str(nc)) for c, nc in zip(other.sql_columns, columns)]
+                *[
+                    c.label(str(nc))
+                    for c, nc in zip(other.sql_columns, columns)
+                ]
             ).select_from(other._table)
             self._table = query.subquery()
         self._count = other._count
@@ -544,20 +549,20 @@ class NamedRelationalAlgebraFrozenSet(
         NamedRelationalAlgebraFrozenSet
             The joined set
         """
+        # Create an alias on the other table's name if we're joining on
+        # the same table.
+        ot = other._table
+        if other._table_name == self._table_name:
+            ot = ot.alias()
+
         on_clause = and_(
-            *[self._table.c.get(col) == other._table.c.get(col) for col in on]
+            *[self._table.c.get(col) == ot.c.get(col) for col in on]
         )
         select_cols = [self._table] + [
-            other._table.c.get(col)
-            for col in set(other.columns) - set(self.columns)
+            ot.c.get(col) for col in set(other.columns) - set(self.columns)
         ]
-        # Create an alias on the other table's name if we're joining on the
-        # same table.
-        other_join_table = other._table
-        if other._table_name == self._table_name:
-            other_join_table = other_join_table.alias()
         query = select(*select_cols).select_from(
-            self._table.join(other_join_table, on_clause, isouter=isouter)
+            self._table.join(ot, on_clause, isouter=isouter)
         )
         return self._create_view_from_query(query)
 
@@ -607,28 +612,6 @@ class NamedRelationalAlgebraFrozenSet(
         return self._create_view_from_query(query)
 
     def aggregate(self, group_columns, aggregate_function):
-        """
-        Group by set values on group_columns, while applying aggregate
-        functions.
-
-        Parameters
-        ----------
-        group_columns : List[str, int]
-            List of columns to group on
-        aggregate_function : Union[Dict[str, Union[callable, str]],
-                    List[tuple(str, str, Union[callable, str])]]
-            dict of destination column name -> aggregate function
-
-        Returns
-        -------
-        NamedRelationalAlgebraFrozenSet
-            New set with aggregated values as columns
-
-        Raises
-        ------
-        ValueError
-            Raised on unsupported aggregate function
-        """
         if isinstance(group_columns, str) or not isinstance(
             group_columns, Iterable
         ):
@@ -636,18 +619,14 @@ class NamedRelationalAlgebraFrozenSet(
         if len(set(group_columns)) < len(group_columns):
             raise ValueError("Cannot group on repeated columns")
 
-        distinct_sub_query = (
-            select(self._table)
-            .distinct()
-            .subquery()
-        )
+        distinct_sub_query = select(self._table).distinct().subquery()
         agg_cols = self._build_aggregate_functions(
             group_columns, aggregate_function, distinct_sub_query
         )
         groupby = [distinct_sub_query.c.get(str(c)) for c in group_columns]
 
-        query = select(groupby + agg_cols).group_by(*groupby)
-        return type(self).create_view_from_query(query, self._parent_tables)
+        query = select(*(groupby + agg_cols)).group_by(*groupby)
+        return self._create_view_from_query(query)
 
     def _build_aggregate_functions(
         self, group_columns, aggregate_function, distinct_view
@@ -680,8 +659,9 @@ class NamedRelationalAlgebraFrozenSet(
                 f = f.__name__
             if callable(f):
                 lambda_name = self._new_name("lambda")
-                SQLAEngineFactory.register_aggregate(
-                    lambda_name, len(c_), f, params=c_,
+                params = [(c.name, np.float64) for c in c_]
+                DaskContextFactory.register_aggregation(
+                    f, lambda_name, params, np.float64
                 )
                 f_ = getattr(func, lambda_name)
             elif isinstance(f, str):
@@ -707,7 +687,9 @@ class NamedRelationalAlgebraFrozenSet(
             if callable(operation):
                 lambda_name = self._new_name("lambda")
                 params = [(name, np.float64) for name in self.columns]
-                DaskContextFactory.register_function(operation, lambda_name, params, np.float64)
+                DaskContextFactory.register_function(
+                    operation, lambda_name, params, np.float64
+                )
                 f_ = getattr(func, lambda_name)
                 proj_columns.append(
                     f_(*self.sql_columns).label(str(dst_column))

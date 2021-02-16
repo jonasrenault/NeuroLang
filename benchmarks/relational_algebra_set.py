@@ -82,10 +82,10 @@ class TimeLeftNaturalJoins:
 
 class TimeChainedNaturalJoins:
     params = [
-        [10 ** 3],
+        [10 ** 4, 10 ** 5],
         [10],
         [3],
-        [10],
+        [6],
         [0.75],
         [pandas, dask_sql],
     ]
@@ -148,7 +148,7 @@ class TimeRawMerge:
 
 
 class TimeDaskSQLJoins:
-    params = [[10 ** 4], [10], [3], [6], [0.75]]
+    params = [[10 ** 4, 10 ** 5], [10], [3], [6], [0.75]]
 
     param_names = [
         "rows",
@@ -250,7 +250,7 @@ class TimeEquiJoin:
 
 def post_process_result(sets, result):
     if isinstance(result, dask_sql.RelationalAlgebraFrozenSet):
-        print(result)
+        # print(result)
         # Fetch one seems slower than _fetchall. Need to investigate.
         result._fetchall()
         # result.fetch_one()

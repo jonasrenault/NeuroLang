@@ -78,3 +78,15 @@ def test_named_iter():
     ras_a = NamedRelationalAlgebraFrozenSet(("y", "x"), a)
     res = list(iter(ras_a))
     assert res == a[:6]
+
+def test_aggregate():
+    initial_set = NamedRelationalAlgebraFrozenSet(
+        ("x", "y", "z"), [(7, 8, 1), (7, 8, 9)]
+    )
+    expected_lambda = NamedRelationalAlgebraFrozenSet(
+        ("x", "y", "z"), [(7, 8, 8)]
+    )
+
+    new_set = initial_set.aggregate(["x", "y"], {"z": lambda x: max(x) - 1})
+    print(list(new_set))
+    assert expected_lambda == new_set
