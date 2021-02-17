@@ -1,3 +1,5 @@
+import numpy as np
+import pandas as pd
 from neurolang.utils.relational_algebra_set.dask_sql import (
     RelationalAlgebraFrozenSet,
     NamedRelationalAlgebraFrozenSet,
@@ -79,7 +81,21 @@ def test_named_iter():
     res = list(iter(ras_a))
     assert res == a[:6]
 
-def test_aggregate():
+
+def test_set_dtypes():
+    data = [
+        (5, "dog", frozenset({(1, 2), (5, 6)}), np.nan, 45.34, False),
+        (10, "cat", frozenset({(5, 6), (8, 9)}), np.nan, np.nan, True),
+        (np.nan, "cow", np.nan, np.nan, np.nan, True),
+    ]
+    ras_a = NamedRelationalAlgebraFrozenSet(('a', 'b', 'c', 'd', 'e', 'f'), data)
+    expected_dtypes = [pd.Int64Dtype(), pd.StringDtype(), np.object_, pd.Int64Dtype(), np.float64, pd.BooleanDtype()]
+    assert all(ras_a.dtypes == expected_dtypes)
+    ras_b = NamedRelationalAlgebraFrozenSet(('aa', 'bb', 'cc', 'dd', 'ee', 'ff'), ras_a)
+    assert all(ras_b.dtypes == expected_dtypes)
+    assert all(ras_b.dtypes.index.values == ('aa', 'bb', 'cc', 'dd', 'ee', 'ff'))
+
+def x_test_aggregate():
     initial_set = NamedRelationalAlgebraFrozenSet(
         ("x", "y", "z"), [(7, 8, 1), (7, 8, 9)]
     )
