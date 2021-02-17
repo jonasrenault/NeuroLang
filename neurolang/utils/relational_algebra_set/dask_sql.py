@@ -40,27 +40,49 @@ client = Client(processes=False)
 LOG = logging.getLogger(__name__)
 
 
-class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
+def _new_name(prefix="table_"):
+    return prefix + str(uuid.uuid4()).replace("-", "_")
+
+
+class DaskRelationalAlgebraBaseSet:
+    """
+    Base class for RelationalAlgebraSets relying on a Dask-SQL backend.
+    This class defines no RA operations but has all the logic of creating /
+    iterating / fetching of items in the sets.
+    """
 
     _count = None
     _table_name = None
     _table = None
     _container = None
+    _init_columns = None
 
-    def __init__(self, iterable=None):
-        if isinstance(iterable, RelationalAlgebraFrozenSet):
-            self._init_from(iterable)
+    def __init__(self, iterable=None, columns=None):
+        self._init_columns = columns
+        if isinstance(iterable, DaskRelationalAlgebraBaseSet):
+            if columns is None or columns == iterable.columns:
+                self._init_from(iterable)
+            else:
+                self._init_from_and_rename(iterable, columns)
         elif iterable is not None:
-            self._create_insert_table(iterable)
-
-    @staticmethod
-    def _new_name(prefix="table_"):
-        return prefix + str(uuid.uuid4()).replace("-", "_")
+            self._create_insert_table(iterable, columns)
 
     def _init_from(self, other):
         self._table_name = other._table_name
         self._container = other._container
         self._table = other._table
+        self._count = other._count
+        self._init_columns = other._init_columns
+
+    def _init_from_and_rename(self, other, columns):
+        if other._table is not None:
+            query = select(
+                *[
+                    c.label(str(nc))
+                    for c, nc in zip(other.sql_columns, columns)
+                ]
+            ).select_from(other._table)
+            self._table = query.subquery()
         self._count = other._count
 
     def _create_insert_table(self, data, columns=None):
@@ -85,12 +107,63 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
             " from {:0.2f} Mb pandas df.".format(npartitions, df_size)
         )
         ddf = dd.from_pandas(data, npartitions=npartitions)
-        self._table_name = self._new_name()
-        self._container = ddf.persist()
-        DaskContextFactory.get_context().create_table(self._table_name, ddf)
-        self._table = table(
-            self._table_name, *[column(c) for c in ddf.columns]
-        )
+        self._set_container(ddf, persist=True)
+
+    def _set_container(self, ddf, persist=True):
+        self._container = ddf
+        if persist:
+            # Persist triggers an evaluation of the dask dataframe task-graph.
+            # This evaluation is asynchronous (if using an asynchronous scheduler).
+            # It will return a new dataframe with a shallow graph.
+            # See https://distributed.dask.org/en/latest/memory.html#persisting-collections
+            self._container = self._container.persist()
+            self._table_name = _new_name()
+            DaskContextFactory.get_context().create_table(
+                self._table_name, ddf
+            )
+            self._table = table(
+                self._table_name, *[column(c) for c in ddf.columns]
+            )
+
+    @property
+    def dummy_row_type(self):
+        """
+        Return dummy row_type of Tuple[Unknown * arity] to avoid calls
+        to the DB.
+        TODO: implement this for real.
+        """
+        if self.arity > 0:
+            return Tuple[tuple(Unknown for _ in range(self.arity))]
+        return Tuple
+
+    @property
+    def arity(self):
+        return len(self.columns)
+
+    @property
+    def columns(self):
+        if self._table is None:
+            return [] if self._init_columns is None else self._init_columns
+        return self._table.c.keys()
+
+    @property
+    def sql_columns(self):
+        if self._table is None:
+            return {}
+        return self._table.c
+
+    @property
+    def container(self):
+        """
+        Accessing the container will evaluate the SQL query representing this set and
+        persist the results in Dask.
+        """
+        if self._container is None:
+            if self._table is not None and self.arity > 0:
+                q = select(self._table)
+                ddf = DaskContextFactory.sql(q)
+                self._set_container(ddf, persist=True)
+        return self._container
 
     @classmethod
     def dee(cls):
@@ -100,7 +173,9 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
 
     @classmethod
     def dum(cls):
-        return cls()
+        output = cls()
+        output._count = 0
+        return output
 
     @classmethod
     def create_view_from(cls, other):
@@ -119,6 +194,12 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
             return self.dum()
         return type(self).create_view_from(self)
 
+    def _create_view_from_query(self, query):
+        output = type(self)()
+        output._table = query.subquery()
+        output._container = None
+        return output
+
     def is_empty(self):
         """
         Using len(self.container.index) == 0 might be faster
@@ -136,44 +217,6 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
     def is_dee(self):
         return self.arity == 0 and not self.is_empty()
 
-    @property
-    def arity(self):
-        return len(self.columns)
-
-    @property
-    def columns(self):
-        if self._table is None:
-            return []
-        return self._table.c.keys()
-
-    @property
-    def sql_columns(self):
-        if self._table is None:
-            return {}
-        return self._table.c
-
-    @property
-    def container(self):
-        """
-        Accessing the container will evaluate the SQL query representing this set and
-        persist the results in Dask.
-        """
-        if self._container is None:
-            if self._table is not None and self.arity > 0:
-                q = select(self._table)
-                # Persist will save the dask dataframe in distributed memory
-                # This effectively caches the results of the sql query
-                self._container = DaskContextFactory.sql(q).persist()
-                self._table_name = self._new_name()
-                DaskContextFactory.get_context().create_table(
-                    self._table_name, self._container
-                )
-                self._table = table(
-                    self._table_name,
-                    *[column(c) for c in self._container.columns],
-                )
-        return self._container
-
     def __len__(self):
         if self._count is None:
             if self.container is None:
@@ -181,11 +224,6 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
             else:
                 self._count = len(self.container.drop_duplicates())
         return self._count
-
-    def __iter__(self):
-        if self.is_dee():
-            return iter([tuple()])
-        return self._fetchall(True).itertuples(name=None, index=False)
 
     def __contains__(self, element):
         if self.arity == 0:
@@ -198,19 +236,6 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         return len(res) > 0
 
     def _normalise_element(self, element):
-        """
-        Returns a dict representation of the element as col -> value.
-
-        Parameters
-        ----------
-        element : Iterable[Any]
-            the element to normalize
-
-        Returns
-        -------
-        Dict[str, Any]
-            the dict reprensentation of the element
-        """
         if isinstance(element, dict):
             pass
         elif hasattr(element, "__iter__") and not isinstance(element, str):
@@ -219,11 +244,100 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
             element = dict(zip(self.columns, (element,)))
         return element
 
-    def _create_view_from_query(self, query):
-        output = type(self)()
-        output._table = query.subquery()
-        output._container = None
-        return output
+    def itervalues(self):
+        raise NotImplementedError()
+
+    def __iter__(self, named=False):
+        if self.is_dee():
+            return iter([tuple()])
+        if named:
+            try:
+                return self._fetchall(True).itertuples(
+                    name="tuple", index=False
+                )
+            except ValueError:
+                # Invalid column names for namedtuple, just return unnamed tuples
+                pass
+        return self._fetchall(True).itertuples(name=None, index=False)
+
+    def as_numpy_array(self):
+        return self._fetchall(True).to_numpy()
+
+    def as_pandas_dataframe(self):
+        return self._fetchall(True)
+
+    def _fetchall(self, drop_duplicates=False):
+        if self.container is None:
+            if self._count == 1:
+                return pd.DataFrame([()])
+            else:
+                return pd.DataFrame([])
+        df = self.container.compute()
+        if drop_duplicates:
+            df = df.drop_duplicates()
+        return df
+
+    def fetch_one(self, named=False):
+        if self.container is None:
+            if self._count == 1:
+                return tuple()
+            return None
+        name = "tuple" if named else None
+        try:
+            return next(
+                self.container.head(1).itertuples(name=name, index=False)
+            )
+        except StopIteration:
+            return None
+
+    def __eq__(self, other):
+        if isinstance(other, DaskRelationalAlgebraBaseSet):
+            if self.is_dee() or other.is_dee():
+                res = self.is_dee() and other.is_dee()
+            elif self.is_dum() or other.is_dum():
+                res = self.is_dum() and other.is_dum()
+            elif (
+                self._table_name is not None
+                and self._table_name == other._table_name
+            ):
+                res = True
+            elif not self._equal_sets_structure(other):
+                res = False
+            else:
+                select_left = select(self._table)
+                select_right = select(
+                    *[other.sql_columns.get(c) for c in self.columns]
+                ).select_from(other._table)
+                diff_left = select_left.except_(select_right)
+                diff_right = select_right.except_(select_left)
+                if len(DaskContextFactory.sql(diff_left).head(1)) > 0:
+                    res = False
+                elif len(DaskContextFactory.sql(diff_right).head(1)) > 0:
+                    res = False
+                else:
+                    res = True
+            return res
+        else:
+            return super().__eq__(other)
+
+    def _equal_sets_structure(self, other):
+        return set(self.columns) == set(other.columns)
+
+    def __repr__(self):
+        t = self._table
+        return "{}({})".format(type(self), t)
+
+    def __hash__(self):
+        if self._table is None:
+            return hash((tuple(), None))
+        return hash(tuple(self.columns, self.as_numpy_array().tobytes()))
+
+
+class RelationalAlgebraFrozenSet(
+    DaskRelationalAlgebraBaseSet, abc.RelationalAlgebraFrozenSet
+):
+    def __init__(self, iterable=None, columns=None):
+        super().__init__(iterable, columns=columns)
 
     def selection(self, select_criteria):
         if self._table is None:
@@ -231,7 +345,7 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
 
         query = select(self._table)
         if callable(select_criteria):
-            lambda_name = self._new_name("lambda")
+            lambda_name = _new_name("lambda")
             params = [(name, np.float64) for name in self.columns]
             DaskContextFactory.register_function(
                 select_criteria, lambda_name, params, np.bool8
@@ -246,7 +360,7 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
         else:
             for k, v in select_criteria.items():
                 if callable(v):
-                    lambda_name = self._new_name("lambda")
+                    lambda_name = _new_name("lambda")
                     c_ = self.sql_columns.get(str(k))
                     DaskContextFactory.register_function(
                         v, lambda_name, [(str(k), np.float64)], np.bool8
@@ -270,26 +384,6 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
                 self.sql_columns.get(str(k)) == self.sql_columns.get(str(v))
             )
         return self._create_view_from_query(query)
-
-    def itervalues(self):
-        raise NotImplementedError()
-
-    def as_numpy_array(self):
-        return self._fetchall(True).to_numpy()
-
-    def as_pandas_dataframe(self):
-        return self._fetchall(True)
-
-    def _fetchall(self, drop_duplicates=False):
-        if self.container is None:
-            if self._count == 1:
-                return pd.DataFrame([()])
-            else:
-                return pd.DataFrame([])
-        df = self.container.compute()
-        if drop_duplicates:
-            df = df.drop_duplicates()
-        return df
 
     def equijoin(self, other, join_indices=None):
         res = self._dee_dum_product(other)
@@ -323,18 +417,6 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
     def cross_product(self, other):
         return self.equijoin(other)
 
-    def fetch_one(self):
-        if self.container is None:
-            if self._count == 1:
-                return tuple()
-            return None
-        try:
-            return next(
-                self.container.head(1).itertuples(name=None, index=False)
-            )
-        except StopIteration:
-            return None
-
     def groupby(self, columns):
         raise NotImplementedError()
 
@@ -353,43 +435,6 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
             proj_columns = [self.sql_columns.get(str(c)) for c in columns]
         query = select(proj_columns).select_from(self._table).distinct()
         return self._create_view_from_query(query)
-
-    def __repr__(self):
-        t = self._table
-        return "{}({})".format(type(self), t)
-
-    def __eq__(self, other):
-        if isinstance(other, RelationalAlgebraFrozenSet):
-            if self.is_dee() or other.is_dee():
-                res = self.is_dee() and other.is_dee()
-            elif self.is_dum() or other.is_dum():
-                res = self.is_dum() and other.is_dum()
-            elif (
-                self._table_name is not None
-                and self._table_name == other._table_name
-            ):
-                res = True
-            elif not self._equal_sets_structure(other):
-                res = False
-            else:
-                select_left = select(self._table)
-                select_right = select(
-                    *[other.sql_columns.get(c) for c in self.columns]
-                ).select_from(other._table)
-                diff_left = select_left.except_(select_right)
-                diff_right = select_right.except_(select_left)
-                if len(DaskContextFactory.sql(diff_left).head(1)) > 0:
-                    res = False
-                elif len(DaskContextFactory.sql(diff_right).head(1)) > 0:
-                    res = False
-                else:
-                    res = True
-            return res
-        else:
-            return super().__eq__(other)
-
-    def _equal_sets_structure(self, other):
-        return set(self.columns) == set(other.columns)
 
     def _do_set_operation(self, other, sql_operator):
         if not self._equal_sets_structure(other):
@@ -431,11 +476,6 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
             return self.copy()
         return self._do_set_operation(other, except_)
 
-    def __hash__(self):
-        if self._table is None:
-            return hash((tuple(), None))
-        return hash(tuple(self.columns, self.as_numpy_array().tobytes()))
-
 
 class NamedRelationalAlgebraFrozenSet(
     RelationalAlgebraFrozenSet, abc.NamedRelationalAlgebraFrozenSet
@@ -444,20 +484,8 @@ class NamedRelationalAlgebraFrozenSet(
         if isinstance(columns, RelationalAlgebraFrozenSet):
             iterable = columns
             columns = columns.columns
-        self._count = None
-        self._table = None
-        self._container = None
-        self._init_columns = columns
         self._check_for_duplicated_columns(columns)
-        if isinstance(iterable, RelationalAlgebraFrozenSet):
-            if columns is None or columns == iterable.columns:
-                self._init_from(iterable)
-            else:
-                self._init_from_and_rename(iterable, columns)
-        elif columns is not None and len(columns) > 0:
-            if iterable is None:
-                iterable = []
-            self._create_insert_table(iterable, columns)
+        super().__init__(iterable, columns)
 
     @staticmethod
     def _check_for_duplicated_columns(columns):
@@ -469,57 +497,15 @@ class NamedRelationalAlgebraFrozenSet(
                 f"Found the following duplicated columns: {dup_cols}"
             )
 
-    def _init_from_and_rename(self, other, columns):
-        if other._table is not None:
-            query = select(
-                *[
-                    c.label(str(nc))
-                    for c, nc in zip(other.sql_columns, columns)
-                ]
-            ).select_from(other._table)
-            self._table = query.subquery()
-        self._count = other._count
-
-    @classmethod
-    def dee(cls):
-        output = cls()
-        output._count = 1
-        return output
-
-    @classmethod
-    def dum(cls):
-        return cls()
-
-    @property
-    def dummy_row_type(self):
-        """
-        Return dummy row_type of Tuple[Unknown * arity] to avoid calls
-        to the DB.
-        TODO: implement this for real.
-        """
-        if self.arity > 0:
-            return Tuple[tuple(Unknown for _ in range(self.arity))]
-        return Tuple
-
-    @property
-    def arity(self):
-        return len(self.columns)
-
     @property
     def columns(self):
-        if self._table is None:
-            return (
-                tuple()
-                if self._init_columns is None
-                else tuple(self._init_columns)
-            )
-        return tuple(self._table.c.keys())
+        return tuple(super().columns)
 
-    @property
-    def sql_columns(self):
-        if self._table is None:
-            return {}
-        return self._table.c
+    def fetch_one(self):
+        return super().fetch_one(named=True)
+    
+    def __iter__(self):
+        return super().__iter__(named=True)
 
     def projection(self, *columns):
         return super().projection(*columns, reindex=False)
@@ -585,20 +571,12 @@ class NamedRelationalAlgebraFrozenSet(
         select_cols = [self._table] + [
             ot.c.get(col) for col in set(other.columns) - set(self.columns)
         ]
-        query = select(*select_cols).select_from(
-            self._table.join(ot, on_clause, isouter=isouter)
-        ).distinct()
+        query = (
+            select(*select_cols)
+            .select_from(self._table.join(ot, on_clause, isouter=isouter))
+            .distinct()
+        )
         return self._create_view_from_query(query)
-
-    def __iter__(self):
-        try:
-            namedtuple("tuple", self.columns)
-        except ValueError:
-            # Invalid column names, just return a tuple
-            return super().__iter__(self)
-        if self.is_dee():
-            return iter([tuple()])
-        return self._fetchall(True).itertuples(name="tuple", index=False)
 
     def equijoin(self, other, join_indices, return_mappings=False):
         raise NotImplementedError()
@@ -682,7 +660,7 @@ class NamedRelationalAlgebraFrozenSet(
             if isinstance(f, types.BuiltinFunctionType):
                 f = f.__name__
             if callable(f):
-                lambda_name = self._new_name("lambda")
+                lambda_name = _new_name("lambda")
                 params = [(c.name, np.float64) for c in c_]
                 DaskContextFactory.register_aggregation(
                     f, lambda_name, params, np.float64
@@ -709,7 +687,7 @@ class NamedRelationalAlgebraFrozenSet(
         proj_columns = []
         for dst_column, operation in eval_expressions.items():
             if callable(operation):
-                lambda_name = self._new_name("lambda")
+                lambda_name = _new_name("lambda")
                 params = [(name, np.float64) for name in self.columns]
                 DaskContextFactory.register_function(
                     operation, lambda_name, params, np.float64
@@ -744,18 +722,6 @@ class NamedRelationalAlgebraFrozenSet(
             columns=eval_expressions.keys(),
             iterable=[eval_expressions.values()],
         )
-
-    def fetch_one(self):
-        if self.container is None:
-            if self._count == 1:
-                return tuple()
-            return None
-        try:
-            return next(
-                self.container.head(1).itertuples(name="tuple", index=False)
-            )
-        except StopIteration:
-            return None
 
     def to_unnamed(self):
         if self._table is not None:

@@ -7,11 +7,6 @@ from ..relational_algebra_set import (
     RelationalAlgebraColumnStr,
     RelationalAlgebraStringExpression,
 )
-from neurolang.utils.relational_algebra_set.sql_helpers import (
-    SQLAEngineFactory,
-)
-from unittest.mock import patch
-from sqlalchemy import create_engine
 
 
 @pytest.fixture(ids=["pandas", "dask"], params=[(pandas,), (dask_sql,)])
