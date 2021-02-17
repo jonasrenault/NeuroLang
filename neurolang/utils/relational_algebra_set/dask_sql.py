@@ -315,7 +315,9 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
                     for i, j in join_indices
                 ]
             )
-            query = query.select_from(self._table.join(ot, on_clause))
+            query = query.select_from(
+                self._table.join(ot, on_clause)
+            ).distinct()
         return self._create_view_from_query(query)
 
     def cross_product(self, other):
@@ -349,7 +351,7 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
             ]
         else:
             proj_columns = [self.sql_columns.get(str(c)) for c in columns]
-        query = select(proj_columns).select_from(self._table)
+        query = select(proj_columns).select_from(self._table).distinct()
         return self._create_view_from_query(query)
 
     def __repr__(self):
@@ -531,7 +533,7 @@ class NamedRelationalAlgebraFrozenSet(
                 "Cross product with common columns " "is not valid"
             )
 
-        query = select(self._table, other._table)
+        query = select(self._table, other._table).distinct()
         return self._create_view_from_query(query)
 
     def naturaljoin(self, other):
@@ -585,7 +587,7 @@ class NamedRelationalAlgebraFrozenSet(
         ]
         query = select(*select_cols).select_from(
             self._table.join(ot, on_clause, isouter=isouter)
-        )
+        ).distinct()
         return self._create_view_from_query(query)
 
     def __iter__(self):
@@ -730,7 +732,7 @@ class NamedRelationalAlgebraFrozenSet(
             else:
                 proj_columns.append(literal(operation).label(str(dst_column)))
 
-        query = select(proj_columns).select_from(self._table)
+        query = select(proj_columns).select_from(self._table).distinct()
         return self._create_view_from_query(query)
 
     def _extended_projection_on_dee(self, eval_expressions):
