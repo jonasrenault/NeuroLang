@@ -124,8 +124,8 @@ class FrozenInstance:
                 new_set = tuple_set - other_tuple_set
             else:
                 new_set = tuple_set
-            if not new_set.is_empty():
-                new_elements[predicate] = new_set
+            # if not new_set.is_empty():
+            new_elements[predicate] = new_set
         res = type(self)(new_elements)
         return res
 

@@ -7,6 +7,7 @@ from collections import namedtuple
 import dask.dataframe as dd
 import numpy as np
 import pandas as pd
+from dask.distributed import Client
 from neurolang.type_system import (
     Unknown,
     get_args,
@@ -16,6 +17,7 @@ from neurolang.type_system import (
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql import functions
 
+
 from dask_sql import Context
 from dask_sql.mappings import sql_to_python_type
 
@@ -23,8 +25,17 @@ LOG = logging.getLogger(__name__)
 
 
 class DaskContextFactory(ABC):
+    """
+    Singleton class to manage Dask-related objects, mainly
+    Dask's Client and Dask-SQL's Context.
+    """
 
     _context = None
+
+    # For single-thread, comment this line and instead use
+    # import dask
+    # dask.config.set(scheduler='single-threaded')
+    _client = Client(processes=False)
 
     @classmethod
     def get_context(cls):

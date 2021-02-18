@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Callable, Tuple
 
 import numpy as np
 import pandas as pd
@@ -157,6 +157,31 @@ def test_infer_types():
     assert try_to_infer_type_of_operation("0", dtypes) == np.int64
     assert try_to_infer_type_of_operation("hello", dtypes) == np.str_
     assert try_to_infer_type_of_operation("hello world", dtypes) == np.float64
+
+
+def test_row_type():
+    data = [
+        (5, "dog", frozenset({(1, 2), (5, 6)}), np.nan, 45.34, False),
+        (10, "cat", frozenset({(5, 6), (8, 9)}), np.nan, np.nan, True),
+        (np.nan, "cow", np.nan, np.nan, np.nan, True),
+    ]
+    ras_a = NamedRelationalAlgebraFrozenSet(
+        ("a", "b", "c", "d", "e", "f"), data
+    )
+    expected_dtypes = [
+        np.int64,
+        str,
+        np.object_,
+        np.int64,
+        np.float64,
+        np.bool8,
+    ]
+    assert ras_a.dummy_row_type == Tuple[tuple(expected_dtypes)]
+    assert NamedRelationalAlgebraFrozenSet.dee().dummy_row_type == Tuple
+    assert (
+        NamedRelationalAlgebraFrozenSet(("x", "y"), []).dummy_row_type
+        == Tuple[tuple([np.object_, np.object_])]
+    )
 
 
 def x_test_aggregate():

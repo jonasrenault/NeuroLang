@@ -193,8 +193,8 @@ class WrappedRelationalAlgebraSetBaseMixin:
     @property
     def row_type(self):
         if self._row_type is None:
-            if hasattr(self, "dummy_row_type"):
-                self._row_type = self.dummy_row_type
+            if hasattr(self, "set_row_type"):
+                self._row_type = self.set_row_type
             if self.arity > 0 and not self.is_empty():
                 self._row_type = Tuple[tuple(
                     TYPEMAP.backend_2_python(t)
@@ -275,8 +275,8 @@ class WrappedNamedRelationalAlgebraFrozenSetMixin(
     @property
     def row_type(self):
         if self._row_type is None:
-            if hasattr(self, "dummy_row_type"):
-                self._row_type = self.dummy_row_type
+            if hasattr(self, "set_row_type"):
+                self._row_type = self.set_row_type
             elif (self.arity > 0 and not self.is_empty()):
                 element = super().fetch_one()
                 self._row_type = Tuple[tuple(

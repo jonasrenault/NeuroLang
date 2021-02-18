@@ -1,39 +1,29 @@
+import logging
+import re
+import types
+import uuid
 from collections.abc import Iterable
 from typing import Tuple
 
-import re
-import logging
-import types
-import uuid
-import numpy as np
-import pandas as pd
 import dask.dataframe as dd
-
+import numpy as np
 from neurolang.type_system import Unknown
-from . import abstract as abc
-from .dask_helpers import DaskContextFactory
-
 from sqlalchemy import (
-    column,
-    table,
-    func,
     and_,
-    select,
-    text,
-    literal_column,
+    column,
+    func,
     literal,
+    literal_column,
+    select,
+    table,
+    text,
 )
-from sqlalchemy.sql import table, intersect, union, except_
+from sqlalchemy.sql import except_, intersect, table, union
 
-# Single threaded scheduler for debugging
-# import dask
-# dask.config.set(scheduler='single-threaded')
-# Distributed scheduler works well on single machine as well.
-# It is recommended and provides dashboard available at
-# http://localhost:8787/status
-from dask.distributed import Client
+import pandas as pd
 
-client = Client(processes=False)
+from . import abstract as abc
+from .dask_helpers import DaskContextFactory, try_to_infer_type_of_operation
 
 
 LOG = logging.getLogger(__name__)
@@ -89,7 +79,9 @@ class DaskRelationalAlgebraBaseSet:
         self._is_empty = other._is_empty
         self._count = other._count
         if other.dtypes is not None:
-            self.dtypes = other.dtypes.rename({other.dtypes.index[i]: c for i, c in enumerate(columns)})
+            self.dtypes = other.dtypes.rename(
+                {other.dtypes.index[i]: c for i, c in enumerate(columns)}
+            )
 
     def _create_insert_table(self, data, columns=None):
         """
@@ -136,14 +128,18 @@ class DaskRelationalAlgebraBaseSet:
             )
 
     @property
-    def dummy_row_type(self):
+    def set_row_type(self):
         """
-        Return dummy row_type of Tuple[Unknown * arity] to avoid calls
-        to the DB.
-        TODO: implement this for real.
+        Return typing info for this set.
         """
         if self.arity > 0:
-            return Tuple[tuple(Unknown for _ in range(self.arity))]
+            types = [self.dtypes[c] for c in self.columns]
+            # pandas datatypes are not recognized as types, but they have
+            # a .type value which is.
+            types = map(
+                lambda t: t.type if not isinstance(t, type) else t, types
+            )
+            return Tuple[tuple(types)]
         return Tuple
 
     @property
@@ -372,7 +368,10 @@ class RelationalAlgebraFrozenSet(
                     lambda_name = _new_name("lambda")
                     c_ = self.sql_columns.get(str(k))
                     DaskContextFactory.register_function(
-                        v, lambda_name, [(str(k), self.dtypes[str(k)])], np.bool8
+                        v,
+                        lambda_name,
+                        [(str(k), self.dtypes[str(k)])],
+                        np.bool8,
                     )
                     f_ = getattr(func, lambda_name)
                     query = query.where(f_(c_))
@@ -448,8 +447,10 @@ class RelationalAlgebraFrozenSet(
         else:
             proj_columns = [self.sql_columns.get(str(c)) for c in columns]
         query = select(proj_columns).select_from(self._table).distinct()
-        
-        return self._create_view_from_query(query, dtypes=dtypes, is_empty=self._is_empty)
+
+        return self._create_view_from_query(
+            query, dtypes=dtypes, is_empty=self._is_empty
+        )
 
     def _do_set_operation(self, other, sql_operator):
         if not self._equal_sets_structure(other):
@@ -457,7 +458,7 @@ class RelationalAlgebraFrozenSet(
                 "Relational algebra set operators can only be used on sets"
                 " with same columns."
             )
-        
+
         ot = other._table.alias()
         query = sql_operator(
             select(self._table),
@@ -519,7 +520,7 @@ class NamedRelationalAlgebraFrozenSet(
 
     def fetch_one(self):
         return super().fetch_one(named=True)
-    
+
     def __iter__(self):
         return super().__iter__(named=True)
 
@@ -536,7 +537,11 @@ class NamedRelationalAlgebraFrozenSet(
             )
 
         query = select(self._table, other._table).distinct()
-        return self._create_view_from_query(query, dtypes=self.dtypes.append(other.dtypes), is_empty=self._is_empty)
+        return self._create_view_from_query(
+            query,
+            dtypes=self.dtypes.append(other.dtypes),
+            is_empty=self._is_empty,
+        )
 
     def naturaljoin(self, other):
         res = self._dee_dum_product(other)
@@ -585,9 +590,7 @@ class NamedRelationalAlgebraFrozenSet(
             *[self._table.c.get(col) == ot.c.get(col) for col in on]
         )
         other_cols = list(set(other.columns) - set(self.columns))
-        select_cols = [self._table] + [
-            ot.c.get(col) for col in other_cols
-        ]
+        select_cols = [self._table] + [ot.c.get(col) for col in other_cols]
         query = (
             select(*select_cols)
             .select_from(self._table.join(ot, on_clause, isouter=isouter))
@@ -595,7 +598,9 @@ class NamedRelationalAlgebraFrozenSet(
         )
         dtypes = self.dtypes.append(other.dtypes[other_cols])
         empty = self._is_empty if isouter else None
-        return self._create_view_from_query(query, dtypes=dtypes, is_empty=empty)
+        return self._create_view_from_query(
+            query, dtypes=dtypes, is_empty=empty
+        )
 
     def equijoin(self, other, join_indices, return_mappings=False):
         raise NotImplementedError()
@@ -613,7 +618,9 @@ class NamedRelationalAlgebraFrozenSet(
             ]
         ).select_from(self._table)
         dtypes = self.dtypes.rename({str(src): str(dst)})
-        return self._create_view_from_query(query, dtypes=dtypes, is_empty=self._is_empty)
+        return self._create_view_from_query(
+            query, dtypes=dtypes, is_empty=self._is_empty
+        )
 
     def rename_columns(self, renames):
         # prevent duplicated destination columns
@@ -632,7 +639,9 @@ class NamedRelationalAlgebraFrozenSet(
             ]
         ).select_from(self._table)
         dtypes = self.dtypes.rename(renames)
-        return self._create_view_from_query(query, dtypes=dtypes, is_empty=self._is_empty)
+        return self._create_view_from_query(
+            query, dtypes=dtypes, is_empty=self._is_empty
+        )
 
     def aggregate(self, group_columns, aggregate_function):
         if isinstance(group_columns, str) or not isinstance(
@@ -650,7 +659,9 @@ class NamedRelationalAlgebraFrozenSet(
 
         query = select(*(groupby + agg_cols)).group_by(*groupby)
         dtypes = self.dtypes[list(group_columns)].append(agg_types)
-        return self._create_view_from_query(query, dtypes=dtypes, is_empty=self._is_empty)
+        return self._create_view_from_query(
+            query, dtypes=dtypes, is_empty=self._is_empty
+        )
 
     def _build_aggregate_functions(
         self, group_columns, aggregate_function, distinct_view
@@ -672,7 +683,7 @@ class NamedRelationalAlgebraFrozenSet(
             c_ for c_ in distinct_view.c if c_.name not in group_columns
         ]
         agg_cols = []
-        agg_types = pd.Series(dtype='object')
+        agg_types = pd.Series(dtype="object")
         for dst, src, f in agg_iter:
             if src in distinct_view.c.keys():
                 # call the aggregate function on only one column
@@ -682,22 +693,25 @@ class NamedRelationalAlgebraFrozenSet(
                 c_ = un_grouped_cols
             if isinstance(f, types.BuiltinFunctionType):
                 f = f.__name__
+                rtype = try_to_infer_type_of_operation(f, self.dtypes)
             if callable(f):
                 lambda_name = _new_name("lambda")
                 params = [(c.name, self.dtypes[c.name]) for c in c_]
+                rtype = try_to_infer_type_of_operation(f, self.dtypes)
                 DaskContextFactory.register_aggregation(
-                    f, lambda_name, params, np.float64
+                    f, lambda_name, params, rtype
                 )
                 f_ = getattr(func, lambda_name)
             elif isinstance(f, str):
                 f_ = getattr(func, f)
+                rtype = try_to_infer_type_of_operation(f, self.dtypes)
             else:
                 raise ValueError(
                     f"Aggregate function for {src} needs "
                     "to be callable or a string"
                 )
             agg_cols.append(f_(*c_).label(str(dst)))
-            agg_types[str(dst)] = np.float64
+            agg_types[str(dst)] = rtype
         return agg_cols, agg_types
 
     def extended_projection(self, eval_expressions):
@@ -709,25 +723,29 @@ class NamedRelationalAlgebraFrozenSet(
             )
 
         proj_columns = []
-        dtypes = pd.Series(dtype='object')
+        dtypes = pd.Series(dtype="object")
         for dst_column, operation in eval_expressions.items():
             if callable(operation):
                 lambda_name = _new_name("lambda")
                 params = [(c, self.dtypes[c]) for c in self.columns]
+                rtype = try_to_infer_type_of_operation(operation, self.dtypes)
                 DaskContextFactory.register_function(
-                    operation, lambda_name, params, np.float64
+                    operation, lambda_name, params, rtype
                 )
                 f_ = getattr(func, lambda_name)
                 proj_columns.append(
                     f_(*self.sql_columns).label(str(dst_column))
                 )
-                dtypes[str(dst_column)] = np.float64
+                dtypes[str(dst_column)] = rtype
             elif isinstance(operation, abc.RelationalAlgebraStringExpression):
                 if str(operation) != str(dst_column):
                     proj_columns.append(
                         literal_column(operation).label(str(dst_column))
                     )
-                    dtypes[str(dst_column)] = np.float64
+                    rtype = try_to_infer_type_of_operation(
+                        operation, self.dtypes
+                    )
+                    dtypes[str(dst_column)] = rtype
                 else:
                     proj_columns.append(self.sql_columns.get(str(operation)))
                     dtypes[str(dst_column)] = self.dtypes[str(dst_column)]
@@ -738,10 +756,13 @@ class NamedRelationalAlgebraFrozenSet(
                 dtypes[str(dst_column)] = self.dtypes[str(operation)]
             else:
                 proj_columns.append(literal(operation).label(str(dst_column)))
-                dtypes[str(dst_column)] = np.float64
+                rtype = try_to_infer_type_of_operation(operation, self.dtypes)
+                dtypes[str(dst_column)] = rtype
 
         query = select(proj_columns).select_from(self._table).distinct()
-        return self._create_view_from_query(query, dtypes=dtypes, is_empty=self._is_empty)
+        return self._create_view_from_query(
+            query, dtypes=dtypes, is_empty=self._is_empty
+        )
 
     def _extended_projection_on_dee(self, eval_expressions):
         """
@@ -758,8 +779,12 @@ class NamedRelationalAlgebraFrozenSet(
             query = select(
                 *[c.label(str(i)) for i, c in enumerate(self.sql_columns)]
             ).select_from(self._table)
-            dtypes = self.dtypes.rename({c: str(i) for i, c in enumerate(self.columns)})
-            return RelationalAlgebraFrozenSet()._create_view_from_query(query, dtypes=dtypes, is_empty=self._is_empty)
+            dtypes = self.dtypes.rename(
+                {c: str(i) for i, c in enumerate(self.columns)}
+            )
+            return RelationalAlgebraFrozenSet()._create_view_from_query(
+                query, dtypes=dtypes, is_empty=self._is_empty
+            )
         return RelationalAlgebraFrozenSet()
 
     def projection_to_unnamed(self, *columns):
