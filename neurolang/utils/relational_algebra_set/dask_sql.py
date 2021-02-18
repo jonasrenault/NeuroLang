@@ -457,6 +457,7 @@ class RelationalAlgebraFrozenSet(
                 "Relational algebra set operators can only be used on sets"
                 " with same columns."
             )
+        
         ot = other._table.alias()
         query = sql_operator(
             select(self._table),

@@ -1,8 +1,16 @@
+from typing import Callable
+
 import numpy as np
 import pandas as pd
+from neurolang.utils.relational_algebra_set import (
+    RelationalAlgebraStringExpression,
+)
+from neurolang.utils.relational_algebra_set.dask_helpers import (
+    try_to_infer_type_of_operation,
+)
 from neurolang.utils.relational_algebra_set.dask_sql import (
-    RelationalAlgebraFrozenSet,
     NamedRelationalAlgebraFrozenSet,
+    RelationalAlgebraFrozenSet,
 )
 
 
@@ -67,12 +75,14 @@ def test_is_empty():
     assert not ras_a.is_empty()
     assert (ras_a - ras_a).is_empty()
 
+
 def test_iter():
     a = [(i, i * j) for i in (1, 2) for j in (2, 3, 4)]
     a += a[3:]
     ras_a = RelationalAlgebraFrozenSet(a)
     res = list(iter(ras_a))
     assert res == a[:6]
+
 
 def test_named_iter():
     a = [(i, i * j) for i in (1, 2) for j in (2, 3, 4)]
@@ -88,12 +98,66 @@ def test_set_dtypes():
         (10, "cat", frozenset({(5, 6), (8, 9)}), np.nan, np.nan, True),
         (np.nan, "cow", np.nan, np.nan, np.nan, True),
     ]
-    ras_a = NamedRelationalAlgebraFrozenSet(('a', 'b', 'c', 'd', 'e', 'f'), data)
-    expected_dtypes = [pd.Int64Dtype(), pd.StringDtype(), np.object_, pd.Int64Dtype(), np.float64, pd.BooleanDtype()]
+    ras_a = NamedRelationalAlgebraFrozenSet(
+        ("a", "b", "c", "d", "e", "f"), data
+    )
+    expected_dtypes = [
+        pd.Int64Dtype(),
+        pd.StringDtype(),
+        np.object_,
+        pd.Int64Dtype(),
+        np.float64,
+        pd.BooleanDtype(),
+    ]
     assert all(ras_a.dtypes == expected_dtypes)
-    ras_b = NamedRelationalAlgebraFrozenSet(('aa', 'bb', 'cc', 'dd', 'ee', 'ff'), ras_a)
+    ras_b = NamedRelationalAlgebraFrozenSet(
+        ("aa", "bb", "cc", "dd", "ee", "ff"), ras_a
+    )
     assert all(ras_b.dtypes == expected_dtypes)
-    assert all(ras_b.dtypes.index.values == ('aa', 'bb', 'cc', 'dd', 'ee', 'ff'))
+    assert all(
+        ras_b.dtypes.index.values == ("aa", "bb", "cc", "dd", "ee", "ff")
+    )
+
+
+def test_infer_types():
+    data = [
+        (5, "dog", frozenset({(1, 2), (5, 6)}), np.nan, 45.34, False),
+        (10, "cat", frozenset({(5, 6), (8, 9)}), np.nan, np.nan, True),
+        (np.nan, "cow", np.nan, np.nan, np.nan, True),
+    ]
+    dtypes = (
+        pd.DataFrame(data, columns=("a", "b", "c", "d", "e", "f"))
+        .convert_dtypes()
+        .dtypes
+    )
+
+    # lambda expression cannot be infered, should return default type
+    assert (
+        try_to_infer_type_of_operation(lambda x: x + 1, dtypes) == np.float64
+    )
+    assert try_to_infer_type_of_operation(
+        lambda x: x + 1, dtypes, np.dtype(object)
+    ) == np.dtype(object)
+    func: Callable[[int], int] = lambda x: x ** 2
+    func.__annotations__["return"] = int
+    assert try_to_infer_type_of_operation(func, dtypes) == np.int64
+    assert try_to_infer_type_of_operation("count", dtypes) == pd.Int32Dtype()
+    assert (
+        try_to_infer_type_of_operation(
+            RelationalAlgebraStringExpression("e + 1"), dtypes
+        )
+        == dtypes["e"]
+    )
+    assert (
+        try_to_infer_type_of_operation(
+            RelationalAlgebraStringExpression("a * 12"), dtypes
+        )
+        == dtypes["a"]
+    )
+    assert try_to_infer_type_of_operation("0", dtypes) == np.int64
+    assert try_to_infer_type_of_operation("hello", dtypes) == np.str_
+    assert try_to_infer_type_of_operation("hello world", dtypes) == np.float64
+
 
 def x_test_aggregate():
     initial_set = NamedRelationalAlgebraFrozenSet(
