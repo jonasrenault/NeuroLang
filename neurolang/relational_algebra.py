@@ -470,6 +470,21 @@ class StringArithmeticWalker(ew.PatternWalker):
 
     @ew.add_match(
         FunctionApplication(Constant, ...),
+        lambda fa: (
+            isinstance(fa.functor.value, Callable)
+            and sum is fa.functor.value
+        ),
+    )
+    def operation_sum(self, fa):
+        return Constant[RelationalAlgebraStringExpression](
+            RelationalAlgebraStringExpression(
+                "sum({})".format(self.walk(fa.args[0]).value)
+            ),
+            auto_infer_type=False,
+        )
+
+    @ew.add_match(
+        FunctionApplication(Constant, ...),
         lambda fa: fa.functor.value == operator.neg,
     )
     def negative_value(self, fa):
