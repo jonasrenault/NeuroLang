@@ -287,13 +287,15 @@ class DaskRelationalAlgebraBaseSet:
             if self._count == 1:
                 return tuple()
             return None
-        name = "tuple" if named else None
-        try:
-            return next(
-                self.container.head(1).itertuples(name=name, index=False)
-            )
-        except StopIteration:
-            return None
+        if not hasattr(self, '_one_row'):
+            name = "tuple" if named else None
+            try:
+                self._one_row = next(
+                    self.container.head(1).itertuples(name=name, index=False)
+                )
+            except StopIteration:
+                self._one_row = None
+        return self._one_row
 
     def __eq__(self, other):
         if isinstance(other, DaskRelationalAlgebraBaseSet):
@@ -335,7 +337,7 @@ class DaskRelationalAlgebraBaseSet:
     def __hash__(self):
         if self._table is None:
             return hash((tuple(), None))
-        return hash(tuple(self.columns, self.as_numpy_array().tobytes()))
+        return hash((tuple(self.columns), self.as_numpy_array().tobytes()))
 
 
 class RelationalAlgebraFrozenSet(
