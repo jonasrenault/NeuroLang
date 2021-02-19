@@ -1,5 +1,6 @@
 import ast
 import logging
+import inspect
 import types
 from abc import ABC
 from collections import namedtuple
@@ -137,19 +138,22 @@ def try_to_infer_type_of_operation(
             rtype = infer_type_builtins(operation)
             rtype = get_args(rtype)[1]
         else:
-            # check if it's one of SQLAlchemy's known functions, like count
-            if hasattr(functions, operation):
-                rtype = getattr(functions, operation).type
-                rtype = sql_to_python_type(rtype().compile())
-            elif isinstance(operation, str):
-                # otherwise operation is probably a str or
-                # RelationalAlgebraStringExpression representing a column
-                # literal, like 'col_a + 1', or a constant like '0'.
-                # We try to parse the expression to get type of variable or
-                # constant.
-                rtype = type_of_expression(
-                    ast.parse(operation, mode="eval").body, column_types
-                )
+            if isinstance(operation, str):
+                # check if it's one of SQLAlchemy's known functions, like count
+                if hasattr(functions, operation):
+                    rtype = getattr(functions, operation).type
+                    if inspect.isclass(rtype):
+                        rtype = rtype()
+                    rtype = sql_to_python_type(rtype.compile())
+                else:
+                    # otherwise operation is probably a str or
+                    # RelationalAlgebraStringExpression representing a column
+                    # literal, like 'col_a + 1', or a constant like '0'.
+                    # We try to parse the expression to get type of variable or
+                    # constant.
+                    rtype = type_of_expression(
+                        ast.parse(operation, mode="eval").body, column_types
+                    )
             else:
                 rtype = type(operation)
         # 2. Then we convert it to np.dtype (we allow a few pandas dtypes as well)

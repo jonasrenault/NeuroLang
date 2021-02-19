@@ -142,6 +142,7 @@ def test_infer_types():
     func.__annotations__["return"] = int
     assert try_to_infer_type_of_operation(func, dtypes) == np.int64
     assert try_to_infer_type_of_operation("count", dtypes) == pd.Int32Dtype()
+    assert try_to_infer_type_of_operation("sum", dtypes) == np.dtype(object)
     assert (
         try_to_infer_type_of_operation(
             RelationalAlgebraStringExpression("e + 1"), dtypes
@@ -155,6 +156,7 @@ def test_infer_types():
         == dtypes["a"]
     )
     assert try_to_infer_type_of_operation("0", dtypes) == np.int64
+    assert try_to_infer_type_of_operation(1.0, dtypes, np.dtype(object)) == np.float64
     assert try_to_infer_type_of_operation("hello", dtypes) == np.str_
     assert try_to_infer_type_of_operation("hello world", dtypes) == np.float64
 
