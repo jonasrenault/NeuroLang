@@ -15,6 +15,8 @@ class FrozenInstance:
 
     def __init__(self, elements=None):
         self.cached_hash = None
+        self._elements_clean = False
+        self._no_sets = None
         if elements is None:
             elements = dict()
         elif isinstance(elements, FrozenInstance):
@@ -25,7 +27,6 @@ class FrozenInstance:
         elif isinstance(elements, Iterable):
             elements = self._elements_from_iterable(elements)
         self.elements = elements
-        self._elements_clean = False
 
     def _clean_elements(self):
         if self._elements_clean:
@@ -37,6 +38,11 @@ class FrozenInstance:
         for k in to_clean:
             del self.elements[k]
         self._elements_clean = True
+        self._no_sets = len(self.elements) == 0
+
+    def _reset_cached(self):
+        self._elements_clean = False
+        self._no_sets = None
 
     def _elements_from_mapping(self, elements):
         in_elements = elements
@@ -112,6 +118,10 @@ class FrozenInstance:
                 other.elements.get(predicate, self._set_type())
             )
         res = type(self)(new_elements)
+        if self._no_sets is not None and other._no_sets is not None:
+            res._no_sets = self._no_sets | other._no_sets
+        elif self._no_sets is False or other._no_sets is False:
+            res._no_sets = False
         return res
 
     def __sub__(self, other):
@@ -136,8 +146,7 @@ class FrozenInstance:
         new_elements = dict()
         for predicate in (self.elements.keys() & other.elements.keys()):
             new_set = self.elements[predicate] & other.elements[predicate]
-            if not new_set.is_empty():
-                new_elements[predicate] = new_set
+            new_elements[predicate] = new_set
         res = type(self)(new_elements)
         return res
 
@@ -145,6 +154,7 @@ class FrozenInstance:
         new_copy = type(self)()
         new_copy.elements = self.elements.copy()
         new_copy._elements_clean = self._elements_clean
+        new_copy._no_sets = self._no_sets
         new_copy.hash = self.cached_hash
         return new_copy
 
@@ -152,6 +162,7 @@ class FrozenInstance:
         out = class_()
         out.elements = self.elements
         out._elements_clean = self._elements_clean
+        out._no_sets = self._no_sets
         return out
 
     def __eq__(self, other):
@@ -161,6 +172,19 @@ class FrozenInstance:
             return self.elements == other.elements
         else:
             return super().__eq__(other)
+
+    def is_empty(self):
+        if self._no_sets is None:
+            to_clean = []
+            self._no_sets = True
+            for k, v in self.elements.items():
+                if not v.is_empty():
+                    self._no_sets = False
+                    break
+                to_clean.append(k)
+            for k in to_clean:
+                del self.elements[k]
+        return self._no_sets
 
     def __repr__(self):
         return repr(self.elements)
@@ -266,6 +290,7 @@ class Instance(FrozenInstance):
         return self
 
     def _remove_predicate_symbol(self, predicate_symbol):
+        self._reset_cached()
         del self.elements[predicate_symbol]
 
     def __isub__(self, other):
@@ -294,13 +319,15 @@ class Instance(FrozenInstance):
     def copy(self):
         new_copy = type(self)()
         new_copy.elements = self.elements.copy()
+        new_copy._elements_clean = self._elements_clean
+        new_copy._no_sets = self._no_sets
         return new_copy
 
 
 class MapInstance(Instance, FrozenMapInstance, MutableMapping):
     def __setitem__(self, predicate_symbol, value):
         set_ = self._set_type(value.value)
-        self._elements_clean = False
+        self._reset_cached()
         self.elements[predicate_symbol] = set_
 
     def __delitem__(self, predicate_symbol):
