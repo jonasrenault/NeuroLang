@@ -457,13 +457,13 @@ class StringArithmeticWalker(ew.PatternWalker):
         FunctionApplication(Constant, ...),
         lambda fa: (
             isinstance(fa.functor.value, Callable)
-            and sum is fa.functor.value
+            and numpy.log == fa.functor.value
         ),
     )
-    def operation_sum(self, fa):
+    def numpy_log(self, fa):
         return Constant[RelationalAlgebraStringExpression](
             RelationalAlgebraStringExpression(
-                "sum({})".format(self.walk(fa.args[0]).value)
+                "log({})".format(self.walk(fa.args[0]).value)
             ),
             auto_infer_type=False,
         )
