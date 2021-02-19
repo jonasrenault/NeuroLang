@@ -72,6 +72,7 @@ def test_set_init():
     assert ras_b.is_empty() == False
 
 
+@pytest.mark.skip()
 def test_named_set_init():
     a = [(i, i * 2) for i in range(5)]
     b = [(i * 2, i * 3) for i in range(5)]
@@ -105,6 +106,7 @@ def test_try_to_create_index():
     assert len(table.indexes) == 2
 
 
+@pytest.mark.skip()
 def test_try_to_create_index_on_views():
     """
     try_to_create_index should create indexes on parent tables when

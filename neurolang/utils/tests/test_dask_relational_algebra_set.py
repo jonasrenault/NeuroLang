@@ -176,10 +176,10 @@ def test_row_type():
         np.float64,
         np.bool8,
     ]
-    assert ras_a.dummy_row_type == Tuple[tuple(expected_dtypes)]
-    assert NamedRelationalAlgebraFrozenSet.dee().dummy_row_type == Tuple
+    assert ras_a.set_row_type == Tuple[tuple(expected_dtypes)]
+    assert NamedRelationalAlgebraFrozenSet.dee().set_row_type == Tuple
     assert (
-        NamedRelationalAlgebraFrozenSet(("x", "y"), []).dummy_row_type
+        NamedRelationalAlgebraFrozenSet(("x", "y"), []).set_row_type
         == Tuple[tuple([np.object_, np.object_])]
     )
 
