@@ -487,12 +487,12 @@ class RelationalAlgebraFrozenSet(
     def __sub__(self, other):
         if not isinstance(other, RelationalAlgebraFrozenSet):
             return super().__sub__(other)
-        if self.is_dee():
-            if other.is_dee():
+        if self.arity == 0 or other.arity == 0:
+            if self.is_dee() and other.is_dee():
                 return self.dum()
-            return self.dee()
-        if self._table is None or other._table is None:
             return self.copy()
+        # if self._table is None or other._table is None:
+        #     return self.copy()
         return self._do_set_operation(other, except_)
 
 

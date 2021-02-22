@@ -1,17 +1,34 @@
+from unittest.mock import patch
+
 import pytest
 
 from ..relational_algebra_set import (
-    pandas,
-    dask_sql,
     RelationalAlgebraColumnInt,
     RelationalAlgebraColumnStr,
     RelationalAlgebraStringExpression,
+    dask_sql,
+    pandas,
 )
+from ..relational_algebra_set.dask_helpers import DaskContextFactory
 
 
-@pytest.fixture(ids=["pandas", "dask"], params=[(pandas,), (dask_sql,)])
+@pytest.fixture(ids=["pandas", "dask_sql"], params=[(pandas,), (dask_sql,)])
 def ra_module(request):
     return request.param[0]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def mock_dask_client():
+    """
+    Dask distributed client is a bit slow to instantiate and not
+    really helpful for testing, so we patch it and instead run
+    a single-threaded dask config.
+    """
+    import dask
+    dask.config.set(scheduler="single-threaded")
+    with patch.object(DaskContextFactory, "_create_client") as _fixture:
+        yield _fixture
+
 
 def test_relational_algebra_set_semantics_empty(ra_module):
     ras = ra_module.RelationalAlgebraSet()
@@ -237,36 +254,26 @@ def test_groupby(ra_module):
     assert res[0] == (1, ras_b)
     assert res[1] == (2, ras_c)
 
+
 def test_relational_algebra_difference(ra_module):
-    first = ra_module.RelationalAlgebraFrozenSet(
-        [(7, 8), (9, 2)]
-    )
-    second = ra_module.RelationalAlgebraFrozenSet(
-        [(9, 2), (42, 0)]
-    )
-    third = ra_module.RelationalAlgebraFrozenSet(
-        [(1, 2, 3), (4, 5, 6)]
-    )
-    empty = ra_module.RelationalAlgebraFrozenSet([])
+    first = ra_module.RelationalAlgebraFrozenSet([(7, 8), (9, 2)])
+    second = ra_module.RelationalAlgebraFrozenSet([(9, 2), (42, 0)])
+    third = ra_module.RelationalAlgebraFrozenSet([(1, 2, 3), (4, 5, 6)])
     dee = ra_module.RelationalAlgebraFrozenSet.dee()
     dum = ra_module.RelationalAlgebraFrozenSet.dum()
 
-    expected = ra_module.RelationalAlgebraFrozenSet(
-        [(7, 8)]
-    )
-    assert first - second == expected
-    assert first - first == empty
-    assert first - empty == first
-    assert empty - first == empty
+    assert first - second == ra_module.RelationalAlgebraFrozenSet([(7, 8)])
+    assert second - first == ra_module.RelationalAlgebraFrozenSet([(42, 0)])
+    assert (first - first).is_empty()
     assert dee - dee == dum
-    assert first - dum == first
-    assert dum - first == dum
-    assert first - empty - second == first - second
+    assert dum - dee == dum
     with pytest.raises(
         ValueError,
-        match="Difference only defined for sets with the same arity"
+        match="Relational algebra set operators can"
+        " only be used on sets with same columns.",
     ):
         first - third
+
 
 def test_relational_algebra_ra_union(ra_module):
     first = ra_module.RelationalAlgebraFrozenSet([(7, 8), (9, 2)])
@@ -762,10 +769,7 @@ def test_named_ra_set_from_other(ra_module):
     first = ra_module.NamedRelationalAlgebraFrozenSet(
         ("x", "n"), [(56, "bonjour"), (42, "aurevoir")]
     )
-    second = ra_module.NamedRelationalAlgebraFrozenSet(
-        first.columns,
-        first,
-    )
+    second = ra_module.NamedRelationalAlgebraFrozenSet(first.columns, first,)
     assert first == second
     for tuple_a, tuple_b in zip(first, second):
         assert tuple_a == tuple_b
@@ -852,10 +856,7 @@ def test_aggregate(ra_module):
     new_set = initial_set.aggregate(["x", "y"], {"z": lambda x: max(x) - 1})
     assert expected_lambda == new_set
     new_set = initial_set.aggregate(
-        ["x", "y"],
-        [
-            ("z", "z", lambda x: max(x) - 1),
-        ],
+        ["x", "y"], [("z", "z", lambda x: max(x) - 1),],
     )
     assert expected_lambda == new_set
     new_set = initial_set2.aggregate(
@@ -939,20 +940,7 @@ def test_extended_projection(ra_module):
         ("z", "x"), [(14, 8), (10, 10)]
     )
     expected_new_colum_str = ra_module.NamedRelationalAlgebraFrozenSet(
-        (
-            "x",
-            "z",
-        ),
-        [
-            (
-                7,
-                "a",
-            ),
-            (
-                9,
-                "a",
-            ),
-        ],
+        ("x", "z",), [(7, "a",), (9, "a",),],
     )
     expected_new_colum_int = ra_module.NamedRelationalAlgebraFrozenSet(
         ("z",), [(1,), (1,)]
@@ -999,10 +987,8 @@ def test_extended_projection(ra_module):
 
 
 def test_extended_projection_on_dee(ra_module):
-    ras_a = (
-        ra_module.NamedRelationalAlgebraFrozenSet.dee().extended_projection(
-            {"new_col": "b"}
-        )
+    ras_a = ra_module.NamedRelationalAlgebraFrozenSet.dee().extended_projection(
+        {"new_col": "b"}
     )
     expected_set = ra_module.NamedRelationalAlgebraFrozenSet(
         ("new_col",), [("b",)]
@@ -1026,14 +1012,12 @@ def test_extended_projection_on_python_sets(ra_module):
 
 def test_rename_columns(ra_module):
     first = ra_module.NamedRelationalAlgebraFrozenSet(
-        ("x", "y"),
-        [(0, 2), (0, 4)],
+        ("x", "y"), [(0, 2), (0, 4)],
     )
     assert first.rename_columns({"x": "x"}) == first
     assert id(first.rename_columns({"x": "x"})) != id(first)
     second = ra_module.NamedRelationalAlgebraFrozenSet(
-        ("y", "x"),
-        [(0, 2), (0, 4)],
+        ("y", "x"), [(0, 2), (0, 4)],
     )
     assert first.rename_columns({"x": "y", "y": "x"}) == second
     with pytest.raises(ValueError, match=r"non-existing columns: {'z'}"):
@@ -1042,8 +1026,7 @@ def test_rename_columns(ra_module):
 
 def test_rename_columns_duplicates(ra_module):
     first = ra_module.NamedRelationalAlgebraFrozenSet(
-        ("x", "y"),
-        [(0, 2), (0, 4)],
+        ("x", "y"), [(0, 2), (0, 4)],
     )
     with pytest.raises(ValueError, match=r"Duplicated.*{'z'}"):
         first.rename_columns({"x": "z", "y": "z"})
@@ -1051,13 +1034,11 @@ def test_rename_columns_duplicates(ra_module):
 
 def test_equality(ra_module):
     first = ra_module.NamedRelationalAlgebraFrozenSet(
-        ("x", "y"),
-        [(0, 2), (0, 4)],
+        ("x", "y"), [(0, 2), (0, 4)],
     )
     assert first == first
     second = ra_module.NamedRelationalAlgebraFrozenSet(
-        ("y", "x"),
-        [(0, 2), (0, 4)],
+        ("y", "x"), [(0, 2), (0, 4)],
     )
     assert first != second
     assert second != first
@@ -1070,29 +1051,25 @@ def test_equality(ra_module):
 def test_relation_duplicated_columns(ra_module):
     with pytest.raises(ValueError, match=r".*Duplicated.*: {'x'}"):
         ra_module.NamedRelationalAlgebraFrozenSet(
-            ("x", "x"),
-            [(0, 2), (0, 4)],
+            ("x", "x"), [(0, 2), (0, 4)],
         )
 
 
 def test_extended_projection_ra_string_expression_empty_relation(ra_module):
     # reported in GH387
     relation = ra_module.NamedRelationalAlgebraFrozenSet(
-        columns=["x", "y"],
-        iterable=[],
+        columns=["x", "y"], iterable=[],
     )
     eval_expressions = {"z": RelationalAlgebraStringExpression("(x / y)")}
     expected = ra_module.NamedRelationalAlgebraFrozenSet(
-        columns=["z"],
-        iterable=[],
+        columns=["z"], iterable=[],
     )
     assert relation.extended_projection(eval_expressions) == expected
 
 
 def test_aggregate_repeated_group_column(ra_module):
     relation = ra_module.NamedRelationalAlgebraFrozenSet(
-        columns=["x", "y"],
-        iterable=[("a", 4), ("b", 5)],
+        columns=["x", "y"], iterable=[("a", 4), ("b", 5)],
     )
     with pytest.raises(ValueError, match="Cannot group on repeated columns"):
         relation.aggregate(["x", "x"], {"y": sum})
@@ -1100,8 +1077,7 @@ def test_aggregate_repeated_group_column(ra_module):
 
 def test_unsupported_aggregation_function(ra_module):
     relation = ra_module.NamedRelationalAlgebraFrozenSet(
-        columns=["x"],
-        iterable=[("a",), ("b",)],
+        columns=["x"], iterable=[("a",), ("b",)],
     )
     with pytest.raises(ValueError, match="Unsupported aggregate_function"):
         relation.aggregate(["x"], None)

@@ -32,15 +32,20 @@ class DaskContextFactory(ABC):
     """
 
     _context = None
-
-    # For single-thread, comment this line and instead use
-    # import dask
-    # dask.config.set(scheduler='single-threaded')
-    _client = Client(processes=False)
+    _client = None
 
     @classmethod
+    def _create_client(cls):
+        # For single-thread, do not create a Client and instead use
+        # import dask
+        # dask.config.set(scheduler='single-threaded')
+        if cls._client is None:
+            cls._client = Client(processes=False)
+        
+    @classmethod
     def get_context(cls):
-        if cls._context == None:
+        if cls._context is None:
+            cls._create_client()
             cls._context = Context()
         return cls._context
 

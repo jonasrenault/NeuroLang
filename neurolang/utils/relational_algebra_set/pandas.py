@@ -344,7 +344,8 @@ class RelationalAlgebraFrozenSet(abc.RelationalAlgebraFrozenSet):
                 self.arity > 0 and other.arity > 0
             ) and self.arity != other.arity:
                 raise ValueError(
-                    "Difference only defined for sets with the same arity"
+                    "Relational algebra set operators can only"
+                    " be used on sets with same columns."
                 )
             if self.is_empty() or other.is_empty():
                 return self.copy()
