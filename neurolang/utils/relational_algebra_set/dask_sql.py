@@ -7,7 +7,6 @@ from typing import Tuple
 
 import dask.dataframe as dd
 import numpy as np
-from neurolang.type_system import Unknown
 from sqlalchemy import (
     and_,
     column,
@@ -93,6 +92,7 @@ class DaskRelationalAlgebraBaseSet:
         elif columns is not None:
             data.columns = list(columns)
         data.columns = data.columns.astype(str)
+        data = data.drop_duplicates()
         # partitions should not be too small, yet fit nicely in memory.
         # The amount of RAM available on the machine should be greater
         # than nb of core x partition size.
@@ -237,7 +237,7 @@ class DaskRelationalAlgebraBaseSet:
         query = select(self._table)
         for c, v in element.items():
             query = query.where(self.sql_columns.get(c) == v)
-        res = DaskContextFactory.sql(query).head(1)
+        res = DaskContextFactory.sql(query).head(1, npartitions=-1)
         return len(res) > 0
 
     def _normalise_element(self, element):
@@ -799,14 +799,32 @@ class NamedRelationalAlgebraFrozenSet(
 class RelationalAlgebraSet(
     RelationalAlgebraFrozenSet, abc.RelationalAlgebraSet
 ):
+    def _update_self_with_ddf(self, ddf, _count=None, _is_empty=None, reset_row=False):
+        self._set_container(ddf, persist=True)
+        self._count = _count
+        self._is_empty = _is_empty
+        if reset_row and hasattr(self, '_one_row'):
+            delattr(self, '_one_row')
+
     def add(self, value):
-        raise NotImplementedError()
+        if self.container is None:
+            self._create_insert_table((value,), self._init_columns)
+        else:
+            value = self._normalise_element(value)
+            ddf = self.container.append(pd.DataFrame(value, index=[0]))
+            self._update_self_with_ddf(ddf, _is_empty=False)
 
     def discard(self, value):
-        raise NotImplementedError()
+        if self.container is not None:
+            value = self._normalise_element(value)
+            mask = (self.container[list(value.keys())] == list(value.values())).all(axis=1)
+            ddf = self.container[~mask]
+            self._update_self_with_ddf(ddf)
 
     def __ior__(self, other):
-        raise NotImplementedError()
+        res = self.__or__(other)
+        self._init_from(res)
 
     def __isub__(self, other):
-        raise NotImplementedError()
+        res = self.__sub__(other)
+        self._init_from(res)
