@@ -833,7 +833,9 @@ class RelationalAlgebraSet(
     def __ior__(self, other):
         res = self.__or__(other)
         self._init_from(res)
+        return self
 
     def __isub__(self, other):
         res = self.__sub__(other)
         self._init_from(res)
+        return self
