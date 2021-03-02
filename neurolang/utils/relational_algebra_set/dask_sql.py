@@ -434,8 +434,20 @@ class RelationalAlgebraFrozenSet(
     def cross_product(self, other):
         return self.equijoin(other)
 
-    def groupby(self, columns):
-        raise NotImplementedError()
+    def groupby(self, columns, named=False):
+        if self.container is not None:
+            if isinstance(columns, str) or not isinstance(
+                columns, Iterable
+            ):
+                columns = [columns]
+            columns = list(map(str, columns))
+            df = self.container.compute()
+            for g_id, group in df.groupby(by=columns):
+                if named:
+                    group_set = type(self)(iterable=group, columns=columns)
+                else:
+                    group_set = type(self)(iterable=group)
+                yield g_id, group_set
 
     def projection(self, *columns, reindex=True):
         if len(columns) == 0 or self.arity == 0:
@@ -700,7 +712,7 @@ class NamedRelationalAlgebraFrozenSet(
                 c_ = un_grouped_cols
             if isinstance(f, types.BuiltinFunctionType):
                 f = f.__name__
-                rtype = try_to_infer_type_of_operation(f, self.dtypes)
+                # rtype = try_to_infer_type_of_operation(f, self.dtypes)
             if callable(f):
                 lambda_name = _new_name("lambda")
                 params = [(c.name, self.dtypes[c.name]) for c in c_]
