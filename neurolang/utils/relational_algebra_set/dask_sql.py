@@ -434,10 +434,11 @@ class RelationalAlgebraFrozenSet(
         raise NotImplementedError()
 
     def projection(self, *columns, reindex=True):
-        if self.is_dum():
-            return self.dum()
-        elif self.is_dee() or len(columns) == 0:
-            return self.dee()
+        if len(columns) == 0 or self.arity == 0:
+            new = type(self)()
+            if len(self) > 0:
+                new._count = 1
+            return new
 
         dtypes = self.dtypes[[str(c) for c in columns]]
         if reindex:
