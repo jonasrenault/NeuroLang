@@ -89,6 +89,10 @@ class DaskRelationalAlgebraBaseSet:
         """
         if not isinstance(data, pd.DataFrame):
             data = pd.DataFrame(data, columns=columns)
+            # if data is empty force dtype to int instead of object which
+            # generates errors when applying operations later on
+            if len(data) == 0:
+                data = data.astype(np.int64)
         elif columns is not None:
             data.columns = list(columns)
         data.columns = data.columns.astype(str)
@@ -287,7 +291,7 @@ class DaskRelationalAlgebraBaseSet:
             if self._count == 1:
                 return tuple()
             return None
-        if not hasattr(self, '_one_row'):
+        if not hasattr(self, "_one_row"):
             name = "tuple" if named else None
             try:
                 self._one_row = next(
@@ -800,12 +804,14 @@ class NamedRelationalAlgebraFrozenSet(
 class RelationalAlgebraSet(
     RelationalAlgebraFrozenSet, abc.RelationalAlgebraSet
 ):
-    def _update_self_with_ddf(self, ddf, _count=None, _is_empty=None, reset_row=False):
+    def _update_self_with_ddf(
+        self, ddf, _count=None, _is_empty=None, reset_row=False
+    ):
         self._set_container(ddf, persist=True)
         self._count = _count
         self._is_empty = _is_empty
-        if reset_row and hasattr(self, '_one_row'):
-            delattr(self, '_one_row')
+        if reset_row and hasattr(self, "_one_row"):
+            delattr(self, "_one_row")
 
     def add(self, value):
         if self.container is None:
@@ -818,7 +824,9 @@ class RelationalAlgebraSet(
     def discard(self, value):
         if self.container is not None:
             value = self._normalise_element(value)
-            mask = (self.container[list(value.keys())] == list(value.values())).all(axis=1)
+            mask = (
+                self.container[list(value.keys())] == list(value.values())
+            ).all(axis=1)
             ddf = self.container[~mask]
             self._update_self_with_ddf(ddf)
 
