@@ -206,7 +206,7 @@ class DaskRelationalAlgebraBaseSet:
 
     def _create_view_from_query(self, query, dtypes, is_empty=None):
         output = type(self)()
-        output._table = query.subquery()
+        output._table = query.cte()
         output._container = None
         output.dtypes = dtypes
         output._is_empty = is_empty
@@ -478,7 +478,9 @@ class RelationalAlgebraFrozenSet(
                 " with same columns."
             )
 
-        ot = other._table.alias()
+        ot = other._table
+        if other._table_name == self._table_name:
+            ot = ot.alias()
         query = sql_operator(
             select(self._table),
             select([ot.c.get(c) for c in self.columns]).select_from(ot),
