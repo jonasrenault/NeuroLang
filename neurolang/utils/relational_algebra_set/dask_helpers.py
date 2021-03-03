@@ -21,6 +21,7 @@ from sqlalchemy.sql import functions
 
 from dask_sql import Context
 from dask_sql.mappings import sql_to_python_type
+from dask_sql.physical.rel.logical.aggregate import AggregationOnPandas
 
 LOG = logging.getLogger(__name__)
 
@@ -47,7 +48,17 @@ class DaskContextFactory(ABC):
         if cls._context is None:
             cls._create_client()
             cls._context = Context()
+            cls._register_sum_aggregation()
         return cls._context
+
+    @classmethod
+    def _register_sum_aggregation(cls):
+        """The sum aggregate method is registered as $sum0 in dask_sql.
+        Not sure why, so instead we register a custom aggregate function
+        named sum when creating a context.
+        """
+        sum_agg = AggregationOnPandas("sum")
+        cls.get_context().register_aggregation(sum_agg, "sum", [("x", np.float64)], np.float64)
 
     @classmethod
     def sql(cls, query):
