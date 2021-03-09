@@ -197,7 +197,7 @@ def test_row_type():
     assert NamedRelationalAlgebraFrozenSet.dee().set_row_type == Tuple
     assert (
         NamedRelationalAlgebraFrozenSet(("x", "y"), []).set_row_type
-        == Tuple[tuple([np.object_, np.object_])]
+        == Tuple[tuple([np.int64, np.int64])]
     )
 
 
@@ -212,3 +212,16 @@ def x_test_aggregate():
     new_set = initial_set.aggregate(["x", "y"], {"z": lambda x: max(x) - 1})
     print(list(new_set))
     assert expected_lambda == new_set
+
+
+def test_create_view_from():
+    a = [(i, i * 2) for i in range(5)]
+    ras_a = RelationalAlgebraFrozenSet(a)
+    ras_a = ras_a.selection({0: 1})
+
+    ras_b = RelationalAlgebraFrozenSet.create_view_from(ras_a)
+    assert ras_b._container is None
+    ras_a.fetch_one()
+    assert ras_a._container is not None
+    assert ras_b._container is None
+    assert ras_b == ras_a

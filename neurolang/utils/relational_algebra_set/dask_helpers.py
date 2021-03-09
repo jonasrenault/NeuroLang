@@ -48,17 +48,7 @@ class DaskContextFactory(ABC):
         if cls._context is None:
             cls._create_client()
             cls._context = Context()
-            cls._register_sum_aggregation()
         return cls._context
-
-    @classmethod
-    def _register_sum_aggregation(cls):
-        """The sum aggregate method is registered as $sum0 in dask_sql.
-        Not sure why, so instead we register a custom aggregate function
-        named sum when creating a context.
-        """
-        sum_agg = AggregationOnPandas("sum")
-        cls.get_context().register_aggregation(sum_agg, "sum", [("x", np.float64)], np.float64)
 
     @classmethod
     def sql(cls, query):
@@ -103,10 +93,28 @@ class DaskContextFactory(ABC):
         # Note: aggregation in dask is applied in chunks, first to each partition individually,
         # then again to the results of all the chunk aggregations. So transformative aggregation
         # will not work properly, for instance sum(x) - 1 will result in sum(x) - 2 in the end.
-        agg = dd.Aggregation(
-            fname, lambda chunk: chunk.agg(f_), lambda total: total.agg(f_)
-        )
-        cls.get_context().register_aggregation(agg, fname, params, return_type)
+        if len(params) > 1:
+            named = False
+            try:
+                pnames = [name for (name, _) in params]
+                named_tuple_type = namedtuple("lambdatuple", pnames)
+                named = True
+            except ValueError:
+                # Invalid column names, just use a tuple instead.
+                # named will be False.
+                pass
+
+            def wrapped_lambda(*values):
+                if named:
+                    return f_(named_tuple_type(*values))
+                else:
+                    return f_(tuple(values))
+            cls.get_context().register_aggregation(wrapped_lambda, fname, params, return_type)
+        else:
+            agg = dd.Aggregation(
+                fname, lambda chunk: chunk.agg(f_), lambda total: total.agg(f_)
+            )
+            cls.get_context().register_aggregation(agg, fname, params, return_type)
 
 
 _SUPPORTED_PANDAS_TYPES = {
