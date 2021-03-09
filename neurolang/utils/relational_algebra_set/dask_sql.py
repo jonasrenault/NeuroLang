@@ -89,6 +89,10 @@ class DaskRelationalAlgebraBaseSet:
         """
         if not isinstance(data, pd.DataFrame):
             data = pd.DataFrame(data, columns=columns)
+            # if data is empty force dtype to int instead of object which
+            # generates errors when applying operations later on
+            if len(data) == 0:
+                data = data.astype(np.int64)
         elif columns is not None:
             data.columns = list(columns)
         data.columns = data.columns.astype(str)
@@ -202,7 +206,7 @@ class DaskRelationalAlgebraBaseSet:
 
     def _create_view_from_query(self, query, dtypes, is_empty=None):
         output = type(self)()
-        output._table = query.subquery()
+        output._table = query.cte()
         output._container = None
         output.dtypes = dtypes
         output._is_empty = is_empty
@@ -287,7 +291,7 @@ class DaskRelationalAlgebraBaseSet:
             if self._count == 1:
                 return tuple()
             return None
-        if not hasattr(self, '_one_row'):
+        if not hasattr(self, "_one_row"):
             name = "tuple" if named else None
             try:
                 self._one_row = next(
@@ -430,8 +434,20 @@ class RelationalAlgebraFrozenSet(
     def cross_product(self, other):
         return self.equijoin(other)
 
-    def groupby(self, columns):
-        raise NotImplementedError()
+    def groupby(self, columns, named=False):
+        if self.container is not None:
+            if isinstance(columns, str) or not isinstance(
+                columns, Iterable
+            ):
+                columns = [columns]
+            columns = list(map(str, columns))
+            df = self.container.compute()
+            for g_id, group in df.groupby(by=columns):
+                if named:
+                    group_set = type(self)(iterable=group, columns=columns)
+                else:
+                    group_set = type(self)(iterable=group)
+                yield g_id, group_set
 
     def projection(self, *columns, reindex=True):
         if len(columns) == 0 or self.arity == 0:
@@ -462,7 +478,9 @@ class RelationalAlgebraFrozenSet(
                 " with same columns."
             )
 
-        ot = other._table.alias()
+        ot = other._table
+        if other._table_name == self._table_name:
+            ot = ot.alias()
         query = sql_operator(
             select(self._table),
             select([ot.c.get(c) for c in self.columns]).select_from(ot),
@@ -696,7 +714,7 @@ class NamedRelationalAlgebraFrozenSet(
                 c_ = un_grouped_cols
             if isinstance(f, types.BuiltinFunctionType):
                 f = f.__name__
-                rtype = try_to_infer_type_of_operation(f, self.dtypes)
+                # rtype = try_to_infer_type_of_operation(f, self.dtypes)
             if callable(f):
                 lambda_name = _new_name("lambda")
                 params = [(c.name, self.dtypes[c.name]) for c in c_]
@@ -800,12 +818,14 @@ class NamedRelationalAlgebraFrozenSet(
 class RelationalAlgebraSet(
     RelationalAlgebraFrozenSet, abc.RelationalAlgebraSet
 ):
-    def _update_self_with_ddf(self, ddf, _count=None, _is_empty=None, reset_row=False):
+    def _update_self_with_ddf(
+        self, ddf, _count=None, _is_empty=None, reset_row=False
+    ):
         self._set_container(ddf, persist=True)
         self._count = _count
         self._is_empty = _is_empty
-        if reset_row and hasattr(self, '_one_row'):
-            delattr(self, '_one_row')
+        if reset_row and hasattr(self, "_one_row"):
+            delattr(self, "_one_row")
 
     def add(self, value):
         if self.container is None:
@@ -818,14 +838,18 @@ class RelationalAlgebraSet(
     def discard(self, value):
         if self.container is not None:
             value = self._normalise_element(value)
-            mask = (self.container[list(value.keys())] == list(value.values())).all(axis=1)
+            mask = (
+                self.container[list(value.keys())] == list(value.values())
+            ).all(axis=1)
             ddf = self.container[~mask]
             self._update_self_with_ddf(ddf)
 
     def __ior__(self, other):
         res = self.__or__(other)
         self._init_from(res)
+        return self
 
     def __isub__(self, other):
         res = self.__sub__(other)
         self._init_from(res)
+        return self
