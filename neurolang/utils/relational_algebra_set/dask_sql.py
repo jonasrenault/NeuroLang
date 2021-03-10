@@ -441,7 +441,7 @@ class RelationalAlgebraFrozenSet(
             )
             query = query.select_from(
                 self._table.join(ot, on_clause)
-            ).distinct()
+            )
         dtypes = self.dtypes
         for i in range(other.arity):
             dtypes[str(i + self.arity)] = other.dtypes[str(i)]
@@ -501,6 +501,8 @@ class RelationalAlgebraFrozenSet(
             select(self._table),
             select([ot.c.get(c) for c in self.columns]).select_from(ot),
         )
+        if sql_operator is union:
+            query = query.distinct()
         return self._create_view_from_query(query, dtypes=self.dtypes)
 
     def __and__(self, other):
@@ -573,7 +575,7 @@ class NamedRelationalAlgebraFrozenSet(
                 "Cross product with common columns " "is not valid"
             )
 
-        query = select(self._table, other._table).distinct()
+        query = select(self._table, other._table)
         return self._create_view_from_query(
             query,
             dtypes=self.dtypes.append(other.dtypes),
@@ -631,7 +633,6 @@ class NamedRelationalAlgebraFrozenSet(
         query = (
             select(*select_cols)
             .select_from(self._table.join(ot, on_clause, isouter=isouter))
-            .distinct()
         )
         dtypes = self.dtypes.append(other.dtypes[other_cols])
         empty = self._is_empty if isouter else None
