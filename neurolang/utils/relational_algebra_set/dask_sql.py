@@ -28,6 +28,7 @@ import pandas as pd
 from . import abstract as abc
 from .dask_helpers import DaskContextFactory, try_to_infer_type_of_operation
 
+import time
 
 LOG = logging.getLogger(__name__)
 
@@ -119,17 +120,19 @@ class DaskRelationalAlgebraBaseSet:
         self._count = len(data)
         self._is_empty = self._count == 0
 
-    def _set_container(self, ddf, persist=True):
+    def _set_container(self, ddf, persist=True, prefix="table_"):
         self._container = ddf
         if persist:
             # Persist triggers an evaluation of the dask dataframe task-graph.
             # This evaluation is asynchronous (if using an asynchronous scheduler).
             # It will return a new dataframe with a shallow graph.
             # See https://distributed.dask.org/en/latest/memory.html#persisting-collections
+            # Since we're calling persist here, make sure to pass persist=False to
+            # create_table method to not call it twice.
             self._container = self._container.persist()
-            self._table_name = _new_name()
+            self._table_name = _new_name(prefix=prefix)
             DaskContextFactory.get_context().create_table(
-                self._table_name, ddf
+                self._table_name, ddf, persist=False
             )
             self._table = table(
                 self._table_name, *[column(c) for c in ddf.columns]
@@ -176,7 +179,9 @@ class DaskRelationalAlgebraBaseSet:
             if self._table is not None and self.arity > 0:
                 self._create_table_or_view(persist=True)
                 q = select(self._table)
-                self._container = DaskContextFactory.sql(q)
+                ddf = DaskContextFactory.sql(q)
+                self._container = ddf
+                # self._set_container(ddf, persist=True, prefix="table_as_")
         return self._container
 
     def _create_table_or_view(self, persist=True):
@@ -185,7 +190,12 @@ class DaskRelationalAlgebraBaseSet:
             q = CreateTableAs(new_table_name, select(self._table))
         else:
             q = CreateView(new_table_name, select(self._table))
+        start = time.perf_counter()
         DaskContextFactory.sql(q)
+        elapsed = time.perf_counter() - start
+        LOG.info("======================================")
+        LOG.info(f"Query execution took {elapsed:0.2f}s.")
+        LOG.info("======================================")
         self._table_name = new_table_name
         self._table = table(
             self._table_name, *[column(c) for c in self.columns]
@@ -689,7 +699,7 @@ class NamedRelationalAlgebraFrozenSet(
         if len(set(group_columns)) < len(group_columns):
             raise ValueError("Cannot group on repeated columns")
 
-        distinct_sub_query = select(self._table).distinct().subquery()
+        distinct_sub_query = select(self._table).subquery()
         agg_cols, agg_types = self._build_aggregate_functions(
             group_columns, aggregate_function, distinct_sub_query
         )
@@ -762,6 +772,8 @@ class NamedRelationalAlgebraFrozenSet(
 
         proj_columns = []
         dtypes = pd.Series(dtype="object")
+        need_to_call_distinct = False
+        col_names = set()
         for dst_column, operation in eval_expressions.items():
             if callable(operation):
                 lambda_name = _new_name("lambda")
@@ -775,6 +787,7 @@ class NamedRelationalAlgebraFrozenSet(
                     f_(*self.sql_columns).label(str(dst_column))
                 )
                 dtypes[str(dst_column)] = rtype
+                need_to_call_distinct = True
             elif isinstance(operation, abc.RelationalAlgebraStringExpression):
                 if str(operation) != str(dst_column):
                     proj_columns.append(
@@ -784,20 +797,25 @@ class NamedRelationalAlgebraFrozenSet(
                         operation, self.dtypes
                     )
                     dtypes[str(dst_column)] = rtype
+                    need_to_call_distinct = True
                 else:
                     proj_columns.append(self.sql_columns.get(str(operation)))
                     dtypes[str(dst_column)] = self.dtypes[str(dst_column)]
+                    col_names.add(str(operation))
             elif isinstance(operation, abc.RelationalAlgebraColumn):
                 proj_columns.append(
                     self.sql_columns.get(str(operation)).label(str(dst_column))
                 )
                 dtypes[str(dst_column)] = self.dtypes[str(operation)]
+                col_names.add(str(operation))
             else:
                 proj_columns.append(literal(operation).label(str(dst_column)))
                 rtype = try_to_infer_type_of_operation(operation, self.dtypes)
                 dtypes[str(dst_column)] = rtype
-
-        query = select(proj_columns).select_from(self._table).distinct()
+                
+        query = select(proj_columns).select_from(self._table)
+        if need_to_call_distinct or set(self.columns) != col_names:
+            query = query.distinct()
         return self._create_view_from_query(
             query, dtypes=dtypes, is_empty=self._is_empty
         )
