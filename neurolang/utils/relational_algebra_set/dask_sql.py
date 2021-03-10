@@ -465,7 +465,9 @@ class RelationalAlgebraFrozenSet(
             dtypes.index = [str(i) for i in range(len(columns))]
         else:
             proj_columns = [self.sql_columns.get(str(c)) for c in columns]
-        query = select(proj_columns).select_from(self._table).distinct()
+        query = select(proj_columns).select_from(self._table)
+        if len(set(proj_columns)) != len(set(self.sql_columns)):
+            query = query.distinct()
 
         return self._create_view_from_query(
             query, dtypes=dtypes, is_empty=self._is_empty
