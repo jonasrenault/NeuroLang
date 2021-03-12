@@ -772,7 +772,6 @@ class NamedRelationalAlgebraFrozenSet(
 
         proj_columns = []
         dtypes = pd.Series(dtype="object")
-        need_to_call_distinct = False
         col_names = set()
         for dst_column, operation in eval_expressions.items():
             if callable(operation):
@@ -787,7 +786,6 @@ class NamedRelationalAlgebraFrozenSet(
                     f_(*self.sql_columns).label(str(dst_column))
                 )
                 dtypes[str(dst_column)] = rtype
-                need_to_call_distinct = True
             elif isinstance(operation, abc.RelationalAlgebraStringExpression):
                 if str(operation) != str(dst_column):
                     proj_columns.append(
@@ -797,7 +795,6 @@ class NamedRelationalAlgebraFrozenSet(
                         operation, self.dtypes
                     )
                     dtypes[str(dst_column)] = rtype
-                    need_to_call_distinct = True
                 else:
                     proj_columns.append(self.sql_columns.get(str(operation)))
                     dtypes[str(dst_column)] = self.dtypes[str(dst_column)]
@@ -814,7 +811,7 @@ class NamedRelationalAlgebraFrozenSet(
                 dtypes[str(dst_column)] = rtype
                 
         query = select(proj_columns).select_from(self._table)
-        if need_to_call_distinct or set(self.columns) != col_names:
+        if set(self.columns) != col_names:
             query = query.distinct()
         return self._create_view_from_query(
             query, dtypes=dtypes, is_empty=self._is_empty
