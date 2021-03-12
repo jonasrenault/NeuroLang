@@ -8,17 +8,31 @@ from typing import Tuple
 
 import dask.dataframe as dd
 import numpy as np
-from neurolang.utils.relational_algebra_set.sql_helpers import (CreateTableAs,
-                                                                CreateView)
-from sqlalchemy import (and_, column, func, literal, literal_column, select,
-                        table, text)
+from neurolang.utils.relational_algebra_set.sql_helpers import (
+    CreateTableAs,
+    CreateView,
+)
+from sqlalchemy import (
+    and_,
+    column,
+    func,
+    literal,
+    literal_column,
+    select,
+    table,
+    text,
+)
 from sqlalchemy.sql import except_, intersect, table, union
 
 import pandas as pd
 
 from . import abstract as abc
 from .config import config
-from .dask_helpers import DaskContextManager, try_to_infer_type_of_operation
+from .dask_helpers import (
+    DaskContextManager,
+    timeit,
+    try_to_infer_type_of_operation,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -113,6 +127,7 @@ class DaskRelationalAlgebraBaseSet:
         self._count = len(data)
         self._is_empty = self._count == 0
 
+    @timeit
     def _set_container(self, ddf, persist=True, prefix="table_"):
         self._container = ddf
         if persist:
@@ -170,29 +185,10 @@ class DaskRelationalAlgebraBaseSet:
         """
         if self._container is None:
             if self._table is not None and self.arity > 0:
-                self._create_table_or_view(persist=True)
                 q = select(self._table)
                 ddf = DaskContextManager.sql(q)
-                self._container = ddf
-                # self._set_container(ddf, persist=True, prefix="table_as_")
+                self._set_container(ddf, persist=True, prefix="table_as_")
         return self._container
-
-    def _create_table_or_view(self, persist=True):
-        new_table_name = _new_name(prefix="table_as_" if persist else "view_")
-        if persist:
-            q = CreateTableAs(new_table_name, select(self._table))
-        else:
-            q = CreateView(new_table_name, select(self._table))
-        start = time.perf_counter()
-        DaskContextManager.sql(q)
-        elapsed = time.perf_counter() - start
-        LOG.info("======================================")
-        LOG.info(f"Query execution took {elapsed:0.2f}s.")
-        LOG.info("======================================")
-        self._table_name = new_table_name
-        self._table = table(
-            self._table_name, *[column(c) for c in self.columns]
-        )
 
     @classmethod
     def dee(cls):
@@ -225,7 +221,7 @@ class DaskRelationalAlgebraBaseSet:
 
     def _create_view_from_query(self, query, dtypes, is_empty=None):
         output = type(self)()
-        output._table = query.subquery()
+        output._table = query.cte()
         output._container = None
         output.dtypes = dtypes
         output._is_empty = is_empty

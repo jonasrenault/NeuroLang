@@ -3,6 +3,7 @@ import inspect
 import logging
 import threading
 import types
+import time
 from abc import ABC
 from collections import namedtuple
 
@@ -32,6 +33,25 @@ from dask_sql import Context
 from dask_sql.mappings import sql_to_python_type
 
 LOG = logging.getLogger(__name__)
+
+
+def timeit(func):
+    """
+    This decorator logs the execution time for the decorated function.
+    Log times will not be acurate for Dask operations if using asynchronous
+    scheduler.
+    """
+
+    def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        result = func(*args, **kwargs)
+        elapsed = time.perf_counter() - start
+        LOG.debug("======================================")
+        LOG.debug(f"{func.__name__} took {elapsed:2.4f} s")
+        LOG.debug("======================================")
+        return result
+
+    return wrapper
 
 
 def _id_generator():
@@ -69,22 +89,14 @@ class DaskContextManager(ABC):
 
     @classmethod
     def sql(cls, query):
-        print(
-            str(
-                query.compile(
-                    dialect=postgresql.dialect(),
-                    compile_kwargs={"literal_binds": True},
-                )
+        compiled_query = str(
+            query.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
             )
         )
-        return cls.get_context().sql(
-            str(
-                query.compile(
-                    dialect=postgresql.dialect(),
-                    compile_kwargs={"literal_binds": True},
-                )
-            )
-        )
+        LOG.info(f"Executing SQL query :\n{compiled_query}")
+        return cls.get_context().sql(compiled_query)
 
     @classmethod
     def register_function(cls, f_, fname, params, return_type):
