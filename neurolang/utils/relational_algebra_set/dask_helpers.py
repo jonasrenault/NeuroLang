@@ -1,14 +1,12 @@
 import ast
-import logging
 import inspect
+import logging
+import threading
 import types
 from abc import ABC
 from collections import namedtuple
 
-import dask.dataframe as dd
 import numpy as np
-import pandas as pd
-from dask.distributed import Client
 from neurolang.type_system import (
     Unknown,
     get_args,
@@ -18,15 +16,35 @@ from neurolang.type_system import (
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql import functions
 
+import pandas as pd
+
+from .config import config
+
+if config["RAS"].getboolean("Synchronous", False):
+    import dask
+
+    dask.config.set(scheduler="single-threaded")
+
+import dask.dataframe as dd
+from dask.distributed import Client
 
 from dask_sql import Context
 from dask_sql.mappings import sql_to_python_type
-from dask_sql.physical.rel.logical.aggregate import AggregationOnPandas
 
 LOG = logging.getLogger(__name__)
 
 
-class DaskContextFactory(ABC):
+def _id_generator():
+    lock = threading.RLock()
+    i = 0
+    while True:
+        with lock:
+            fresh = f"{i:08}"
+            i += 1
+        yield fresh
+
+
+class DaskContextManager(ABC):
     """
     Singleton class to manage Dask-related objects, mainly
     Dask's Client and Dask-SQL's Context.
@@ -34,24 +52,31 @@ class DaskContextFactory(ABC):
 
     _context = None
     _client = None
+    _id_generator_ = _id_generator()
 
     @classmethod
     def _create_client(cls):
-        # For single-thread, do not create a Client and instead use
-        # import dask
-        # dask.config.set(scheduler='single-threaded')
         if cls._client is None:
             cls._client = Client(processes=False)
-        
+
     @classmethod
     def get_context(cls):
         if cls._context is None:
-            cls._create_client()
+            if not config["RAS"].getboolean("Synchronous", False):
+                cls._create_client()
             cls._context = Context()
         return cls._context
 
     @classmethod
     def sql(cls, query):
+        print(
+            str(
+                query.compile(
+                    dialect=postgresql.dialect(),
+                    compile_kwargs={"literal_binds": True},
+                )
+            )
+        )
         return cls.get_context().sql(
             str(
                 query.compile(
@@ -109,12 +134,17 @@ class DaskContextFactory(ABC):
                     return f_(named_tuple_type(*values))
                 else:
                     return f_(tuple(values))
-            cls.get_context().register_aggregation(wrapped_lambda, fname, params, return_type)
+
+            cls.get_context().register_aggregation(
+                wrapped_lambda, fname, params, return_type
+            )
         else:
             agg = dd.Aggregation(
                 fname, lambda chunk: chunk.agg(f_), lambda total: total.agg(f_)
             )
-            cls.get_context().register_aggregation(agg, fname, params, return_type)
+            cls.get_context().register_aggregation(
+                agg, fname, params, return_type
+            )
 
 
 _SUPPORTED_PANDAS_TYPES = {
@@ -199,8 +229,8 @@ def type_of_expression(node, column_types):
         return type(node.n)
     elif isinstance(node, ast.Constant):  # Constant
         return type(node.value)
-    elif isinstance(node, ast.Name):  
-        if node.id in column_types.index: # Col name
+    elif isinstance(node, ast.Name):
+        if node.id in column_types.index:  # Col name
             return column_types[node.id]
         else:
             return str
@@ -210,4 +240,3 @@ def type_of_expression(node, column_types):
         return type_of_expression(node.operand, column_types)
     else:
         return Unknown
-

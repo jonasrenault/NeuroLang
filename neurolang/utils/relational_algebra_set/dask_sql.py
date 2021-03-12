@@ -1,9 +1,6 @@
 import logging
-from neurolang.utils.relational_algebra_set.sql_helpers import (
-    CreateTableAs,
-    CreateView,
-)
 import re
+import time
 import types
 import uuid
 from collections.abc import Iterable
@@ -11,30 +8,26 @@ from typing import Tuple
 
 import dask.dataframe as dd
 import numpy as np
-from sqlalchemy import (
-    and_,
-    column,
-    func,
-    literal,
-    literal_column,
-    select,
-    table,
-    text,
-)
+from neurolang.utils.relational_algebra_set.sql_helpers import (CreateTableAs,
+                                                                CreateView)
+from sqlalchemy import (and_, column, func, literal, literal_column, select,
+                        table, text)
 from sqlalchemy.sql import except_, intersect, table, union
 
 import pandas as pd
 
 from . import abstract as abc
-from .dask_helpers import DaskContextFactory, try_to_infer_type_of_operation
-
-import time
+from .config import config
+from .dask_helpers import DaskContextManager, try_to_infer_type_of_operation
 
 LOG = logging.getLogger(__name__)
 
 
 def _new_name(prefix="table_"):
-    return prefix + str(uuid.uuid4()).replace("-", "_")
+    if config["RAS"].get("TableIds", "uuid") == "uuid":
+        return prefix + str(uuid.uuid4()).replace("-", "_")
+    else:
+        return prefix + next(DaskContextManager._id_generator_)
 
 
 class DaskRelationalAlgebraBaseSet:
@@ -131,7 +124,7 @@ class DaskRelationalAlgebraBaseSet:
             # create_table method to not call it twice.
             self._container = self._container.persist()
             self._table_name = _new_name(prefix=prefix)
-            DaskContextFactory.get_context().create_table(
+            DaskContextManager.get_context().create_table(
                 self._table_name, ddf, persist=False
             )
             self._table = table(
@@ -179,7 +172,7 @@ class DaskRelationalAlgebraBaseSet:
             if self._table is not None and self.arity > 0:
                 self._create_table_or_view(persist=True)
                 q = select(self._table)
-                ddf = DaskContextFactory.sql(q)
+                ddf = DaskContextManager.sql(q)
                 self._container = ddf
                 # self._set_container(ddf, persist=True, prefix="table_as_")
         return self._container
@@ -191,7 +184,7 @@ class DaskRelationalAlgebraBaseSet:
         else:
             q = CreateView(new_table_name, select(self._table))
         start = time.perf_counter()
-        DaskContextFactory.sql(q)
+        DaskContextManager.sql(q)
         elapsed = time.perf_counter() - start
         LOG.info("======================================")
         LOG.info(f"Query execution took {elapsed:0.2f}s.")
@@ -267,7 +260,7 @@ class DaskRelationalAlgebraBaseSet:
         query = select(self._table)
         for c, v in element.items():
             query = query.where(self.sql_columns.get(c) == v)
-        res = DaskContextFactory.sql(query).head(1, npartitions=-1)
+        res = DaskContextManager.sql(query).head(1, npartitions=-1)
         return len(res) > 0
 
     def _normalise_element(self, element):
@@ -347,9 +340,9 @@ class DaskRelationalAlgebraBaseSet:
                 ).select_from(other._table)
                 diff_left = select_left.except_(select_right)
                 diff_right = select_right.except_(select_left)
-                if len(DaskContextFactory.sql(diff_left).head(1)) > 0:
+                if len(DaskContextManager.sql(diff_left).head(1)) > 0:
                     res = False
-                elif len(DaskContextFactory.sql(diff_right).head(1)) > 0:
+                elif len(DaskContextManager.sql(diff_right).head(1)) > 0:
                     res = False
                 else:
                     res = True
@@ -384,7 +377,7 @@ class RelationalAlgebraFrozenSet(
         if callable(select_criteria):
             lambda_name = _new_name("lambda")
             params = [(c, self.dtypes[c]) for c in self.columns]
-            DaskContextFactory.register_function(
+            DaskContextManager.register_function(
                 select_criteria, lambda_name, params, np.bool8
             )
             f_ = getattr(func, lambda_name)
@@ -399,7 +392,7 @@ class RelationalAlgebraFrozenSet(
                 if callable(v):
                     lambda_name = _new_name("lambda")
                     c_ = self.sql_columns.get(str(k))
-                    DaskContextFactory.register_function(
+                    DaskContextManager.register_function(
                         v,
                         lambda_name,
                         [(str(k), self.dtypes[str(k)])],
@@ -449,9 +442,7 @@ class RelationalAlgebraFrozenSet(
                     for i, j in join_indices
                 ]
             )
-            query = query.select_from(
-                self._table.join(ot, on_clause)
-            )
+            query = query.select_from(self._table.join(ot, on_clause))
         dtypes = self.dtypes
         for i in range(other.arity):
             dtypes[str(i + self.arity)] = other.dtypes[str(i)]
@@ -640,9 +631,8 @@ class NamedRelationalAlgebraFrozenSet(
         )
         other_cols = list(set(other.columns) - set(self.columns))
         select_cols = [self._table] + [ot.c.get(col) for col in other_cols]
-        query = (
-            select(*select_cols)
-            .select_from(self._table.join(ot, on_clause, isouter=isouter))
+        query = select(*select_cols).select_from(
+            self._table.join(ot, on_clause, isouter=isouter)
         )
         dtypes = self.dtypes.append(other.dtypes[other_cols])
         empty = self._is_empty if isouter else None
@@ -746,7 +736,7 @@ class NamedRelationalAlgebraFrozenSet(
                 lambda_name = _new_name("lambda")
                 params = [(c.name, self.dtypes[c.name]) for c in c_]
                 rtype = try_to_infer_type_of_operation(f, self.dtypes)
-                DaskContextFactory.register_aggregation(
+                DaskContextManager.register_aggregation(
                     f, lambda_name, params, rtype
                 )
                 f_ = getattr(func, lambda_name)
@@ -778,7 +768,7 @@ class NamedRelationalAlgebraFrozenSet(
                 lambda_name = _new_name("lambda")
                 params = [(c, self.dtypes[c]) for c in self.columns]
                 rtype = try_to_infer_type_of_operation(operation, self.dtypes)
-                DaskContextFactory.register_function(
+                DaskContextManager.register_function(
                     operation, lambda_name, params, rtype
                 )
                 f_ = getattr(func, lambda_name)
@@ -809,7 +799,7 @@ class NamedRelationalAlgebraFrozenSet(
                 proj_columns.append(literal(operation).label(str(dst_column)))
                 rtype = try_to_infer_type_of_operation(operation, self.dtypes)
                 dtypes[str(dst_column)] = rtype
-                
+
         query = select(proj_columns).select_from(self._table)
         if set(self.columns) != col_names:
             query = query.distinct()

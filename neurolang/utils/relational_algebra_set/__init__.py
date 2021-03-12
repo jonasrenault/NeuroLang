@@ -1,13 +1,16 @@
 import os
 from .abstract import RelationalAlgebraColumnInt, RelationalAlgebraColumnStr, RelationalAlgebraStringExpression
+from .config import config
 
-if os.getenv("NEURO_RAS_BACKEND", "pandas") == "sql":
+if config["RAS"].get("Backend", "pandas") == "sql":
+# if os.getenv("NEURO_RAS_BACKEND", "pandas") == "sql":
     from .sql import (
         NamedRelationalAlgebraFrozenSet,
         RelationalAlgebraFrozenSet,
         RelationalAlgebraSet,
     )
-elif os.getenv("NEURO_RAS_BACKEND", "dask") == "dask":
+elif config["RAS"].get("Backend", "pandas") == "dask":
+# elif os.getenv("NEURO_RAS_BACKEND", "dask") == "dask":
     from .dask_sql import (
         NamedRelationalAlgebraFrozenSet,
         RelationalAlgebraFrozenSet,
