@@ -128,7 +128,7 @@ class DaskRelationalAlgebraBaseSet:
         self._is_empty = self._count == 0
 
     @timeit
-    def _set_container(self, ddf, persist=True, prefix="table_"):
+    def _set_container(self, ddf, persist=True, prefix="table_", sql=None):
         self._container = ddf
         if persist:
             # Persist triggers an evaluation of the dask dataframe task-graph.
@@ -140,7 +140,7 @@ class DaskRelationalAlgebraBaseSet:
             self._container = self._container.persist()
             self._table_name = _new_name(prefix=prefix)
             DaskContextManager.get_context().create_table(
-                self._table_name, ddf, persist=False
+                self._table_name, ddf, persist=False, sql=sql
             )
             self._table = table(
                 self._table_name, *[column(c) for c in ddf.columns]
@@ -187,7 +187,8 @@ class DaskRelationalAlgebraBaseSet:
             if self._table is not None and self.arity > 0:
                 q = select(self._table)
                 ddf = DaskContextManager.sql(q)
-                self._set_container(ddf, persist=True, prefix="table_as_")
+                query = DaskContextManager.compile_query(q)
+                self._set_container(ddf, persist=True, prefix="table_as_", sql=query)
         return self._container
 
     @classmethod

@@ -89,14 +89,18 @@ class DaskContextManager(ABC):
 
     @classmethod
     def sql(cls, query):
-        compiled_query = str(
+        compiled_query = cls.compile_query(query)
+        LOG.info(f"Executing SQL query :\n{compiled_query}")
+        return cls.get_context().sql(compiled_query)
+
+    @classmethod
+    def compile_query(cls, query):
+        return str(
             query.compile(
                 dialect=postgresql.dialect(),
                 compile_kwargs={"literal_binds": True},
             )
         )
-        LOG.info(f"Executing SQL query :\n{compiled_query}")
-        return cls.get_context().sql(compiled_query)
 
     @classmethod
     def register_function(cls, f_, fname, params, return_type):
