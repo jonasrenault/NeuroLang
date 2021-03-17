@@ -188,7 +188,9 @@ class DaskRelationalAlgebraBaseSet:
                 q = select(self._table)
                 ddf = DaskContextManager.sql(q)
                 query = DaskContextManager.compile_query(q)
-                self._set_container(ddf, persist=True, prefix="table_as_", sql=query)
+                self._set_container(
+                    ddf, persist=True, prefix="table_as_", sql=query
+                )
         return self._container
 
     @classmethod
@@ -331,18 +333,15 @@ class DaskRelationalAlgebraBaseSet:
             elif not self._equal_sets_structure(other):
                 res = False
             else:
-                select_left = select(self._table)
-                select_right = select(
-                    *[other.sql_columns.get(c) for c in self.columns]
-                ).select_from(other._table)
-                diff_left = select_left.except_(select_right)
-                diff_right = select_right.except_(select_left)
-                if len(DaskContextManager.sql(diff_left).head(1)) > 0:
-                    res = False
-                elif len(DaskContextManager.sql(diff_right).head(1)) > 0:
-                    res = False
-                else:
+                scont = self.container
+                ocont = other.container
+                if len(scont) == 0 and len(ocont) == 0:
                     res = True
+                else:
+                    intersection_dups = scont.merge(
+                        ocont, how="outer", indicator=True
+                    ).iloc[:, -1].compute()
+                    res = (intersection_dups == "both").all()
             return res
         else:
             return super().__eq__(other)
