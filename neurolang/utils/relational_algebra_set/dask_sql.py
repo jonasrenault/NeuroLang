@@ -500,7 +500,7 @@ class RelationalAlgebraFrozenSet(
             select([ot.c.get(c) for c in self.columns]).select_from(ot),
         )
         if sql_operator is union:
-            query = query.distinct()
+            query = select(query.subquery()).distinct()
         return self._create_view_from_query(query, dtypes=self.dtypes)
 
     def __and__(self, other):
