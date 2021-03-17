@@ -540,7 +540,7 @@ def test_named_relational_algebra_ra_selection(ra_module):
     ras_0 = ras.selection({"x": lambda x: x == 1, "y": lambda y: y == 2})
     assert ras_0 == a_sel
 
-    ras_0 = ras.selection(lambda t: t.x == 1 and t.y == 2)
+    ras_0 = ras.selection(lambda t: (t.x == 1) & (t.y == 2))
     assert ras_0 == a_sel
 
     ras_0 = ras.selection(
