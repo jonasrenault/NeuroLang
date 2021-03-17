@@ -9,25 +9,11 @@ from ..relational_algebra_set import (
     dask_sql,
     pandas,
 )
-from ..relational_algebra_set.dask_helpers import DaskContextFactory
 
 
 @pytest.fixture(ids=["pandas", "dask_sql"], params=[(pandas,), (dask_sql,)])
 def ra_module(request):
     return request.param[0]
-
-
-@pytest.fixture(scope="session", autouse=True)
-def mock_dask_client():
-    """
-    Dask distributed client is a bit slow to instantiate and not
-    really helpful for testing, so we patch it and instead run
-    a single-threaded dask config.
-    """
-    import dask
-    dask.config.set(scheduler="single-threaded")
-    with patch.object(DaskContextFactory, "_create_client") as _fixture:
-        yield _fixture
 
 
 def test_relational_algebra_set_semantics_empty(ra_module):

@@ -222,7 +222,7 @@ class DaskRelationalAlgebraBaseSet:
 
     def _create_view_from_query(self, query, dtypes, is_empty=None):
         output = type(self)()
-        output._table = query.cte()
+        output._table = query.subquery()
         output._container = None
         output.dtypes = dtypes
         output._is_empty = is_empty

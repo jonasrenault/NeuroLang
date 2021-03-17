@@ -6,7 +6,7 @@ from neurolang.utils.relational_algebra_set import (
     RelationalAlgebraStringExpression,
 )
 from neurolang.utils.relational_algebra_set.dask_helpers import (
-    try_to_infer_type_of_operation, DaskContextFactory
+    try_to_infer_type_of_operation,
 )
 from neurolang.utils.relational_algebra_set.dask_sql import (
     NamedRelationalAlgebraFrozenSet,
@@ -14,19 +14,6 @@ from neurolang.utils.relational_algebra_set.dask_sql import (
 )
 from unittest.mock import patch
 import pytest
-
-
-@pytest.fixture(scope="session", autouse=True)
-def mock_dask_client():
-    """
-    Dask distributed client is a bit slow to instantiate and not
-    really helpful for testing, so we patch it and instead run
-    a single-threaded dask config.
-    """
-    import dask
-    dask.config.set(scheduler="single-threaded")
-    with patch.object(DaskContextFactory, "_create_client") as _fixture:
-        yield _fixture
 
 
 def test_set_init():
@@ -171,7 +158,10 @@ def test_infer_types():
         == dtypes["a"]
     )
     assert try_to_infer_type_of_operation("0", dtypes) == np.int64
-    assert try_to_infer_type_of_operation(1.0, dtypes, np.dtype(object)) == np.float64
+    assert (
+        try_to_infer_type_of_operation(1.0, dtypes, np.dtype(object))
+        == np.float64
+    )
     assert try_to_infer_type_of_operation("hello", dtypes) == np.str_
     assert try_to_infer_type_of_operation("hello world", dtypes) == np.float64
 
